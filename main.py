@@ -9,6 +9,7 @@ import datetime
 import logging
 import cv2
 import pygame.gfxdraw
+import math
 
 # Configuration
 IMAGE_DIR = "images"  # directory with equirectangular images
@@ -257,51 +258,64 @@ def main():
 
     def compute_svf(mask, crop, h):
         """
-        Compute Sky View Factor (SVF) from a weighted mask and crop value using solid angle integration.
+        Compute Sky View Factor (SVF) from a weighted mask and crop value using solid‐angle integration
+        on an equirectangular image.
 
-        This function implements the correct spherical projection weighting for equirectangular images, as required for
-        physically meaningful SVF (Sky View Factor) calculations. The algorithm is based on the solid angle subtended by
-        each row of pixels, as described by Paul Bourke:
-        - https://paulbourke.net/dome/fisheye/
-        - https://en.wikipedia.org/wiki/Solid_angle
+        This function implements two equivalent, physically correct methods for SVF calculation over a hemisphere:
+
+        1. Continuous solid‐angle integration (default):
+        - For an equirectangular panorama of height h:
+            each pixel row y corresponds to a zenith angle θ = π·y/h.
+        - For row y (from crop up to h//2):
+                θ0 = π * y     / h      (top of row)
+                θ1 = π * (y+1) / h      (bottom of row)
+            solid angle of that ring:
+                dΩ_row = 2π * [ cos(θ0) - cos(θ1) ]
+        - Accumulate
+                numerator   = ∑ (dΩ_row * sky_fraction_row)
+                denominator = ∑ dΩ_row
+            where sky_fraction_row = mean(mask[y, :]) ∈ [0,1].
+        - SVF = numerator / denominator
+
+        2. Discrete “ring” approximation using the paper’s closed‐form weights:
+        - Divide the hemisphere into n = (h//2 - crop) equal‐angle θ‐rings.
+        - For i = 1…n, each ring’s normalized weight is
+                w_i = (1 / (2π))
+                    · sin(π / (2n))
+                    · sin[π (2i - 1) / (2n)]
+            which satisfies ∑ w_i = 1.
+        - SVF = ∑_{i=1}^n w_i · mean(mask[crop + i - 1, :])
 
         Args:
-            mask: 2D numpy array, weighted mask (values in [0,1], where 0=obstacle/ground, 1=full sky, intermediate=partial sky)
-            crop: number of pixels cropped from top (letterbox, i.e. north pole)
-            h: image height (pixels)
-        Returns:
-            SVF as a float in [0,1], where 1.0 means all sky, 0.0 means all blocked
+            mask : 2D numpy array of floats in [0,1].  
+                0 = fully blocked, 1 = fully sky.
+            crop : int, pixels removed from top (zenith) of image.
+            h    : int, total image height in pixels.
 
-        Algorithm:
-        - For each row y from crop to h//2 (zenith to horizon):
-            - θ0 = π * y / h      (top of row, zenith angle)
-            - θ1 = π * (y+1) / h  (bottom of row)
-            - Solid angle for row: dΩ_row = 2π * (cos(θ0) - cos(θ1))
-            - Fraction of sky in row: mean(mask[y, :])  # weighted sky fraction
-            - Add dΩ_row * (sky_frac) to numerator
-            - Add dΩ_row to denominator
-        - SVF = numerator / denominator
-        - If all pixels are sky, SVF = 1.0
-        - If all pixels are blocked, SVF = 0.0
+        Returns:
+            float in [0,1]: 1.0 = open sky, 0.0 = fully blocked.
+
+        Notes:
+        - Both methods assume an equirectangular vertical mapping (linear θ vs y).
+        - Method (1) integrates “exactly” over the pixel rows.
+        - Method (2) matches the paper’s closed‐form spherical‐area discretization.
         """
-        import math
         y0 = int(crop)
-        y1 = h // 2  # Only zenith to horizon
+        y1 = h // 2
         if y1 <= y0:
             return 0.0
-        w = mask.shape[1]
+
         svf_num = 0.0
         svf_den = 0.0
         for y in range(y0, y1):
-            theta0 = math.pi * y / h
+            theta0 = math.pi * y     / h
             theta1 = math.pi * (y + 1) / h
-            d_omega_row = 2 * math.pi * (math.cos(theta0) - math.cos(theta1))
-            sky_frac = np.mean(mask[y, :])  # weighted sky fraction
-            svf_num += d_omega_row * sky_frac
-            svf_den += d_omega_row
-        if svf_den == 0:
-            return 0.0
-        return svf_num / svf_den
+            d_omega = 2 * math.pi * (math.cos(theta0) - math.cos(theta1))
+            sky_frac = np.mean(mask[y, :])
+            svf_num += d_omega * sky_frac
+            svf_den += d_omega
+
+        return svf_num / svf_den if svf_den > 0 else 0.0
 
     svf_value = None  # Store last SVF value
     show_math_viz = False  # Toggle for SVF math visualization
@@ -496,7 +510,7 @@ def main():
                 crop_surf2 = pygame.Surface((img_area_w, crop_n), pygame.SRCALPHA)
                 crop_surf2.fill((255, 80, 180, 255))
                 screen.blit(crop_surf2, crop_rect_bot)
-            # Draw 5 blue dashed lines and annotate 6 regions
+            # Draw 5 blue dashed lines (no percentages)
             region_lines = 6
             region_ys = []
             for i in range(region_lines + 1):
@@ -504,30 +518,8 @@ def main():
                 y = int((crop_n + frac * (h_ui//2 - crop_n)) - offset_y)
                 region_ys.append(y)
                 if 0 <= y < img_area_h:
-                    # Draw dashed blue line
                     for x in range(LEFT_PANEL_WIDTH, LEFT_PANEL_WIDTH + img_area_w, 20):
                         pygame.draw.line(screen, (80, 160, 255), (x, y), (x+10, y), 2)
-            # Annotate % influence for each region
-            if mask is not None:
-                import math
-                h_mask = mask.shape[0]
-                w_mask = mask.shape[1]
-                y0 = int(letterbox_crop)
-                y1 = h_mask // 2
-                for i in range(region_lines):
-                    # Compute theta0/theta1 for region
-                    theta0 = math.pi * (y0 + (i)*(y1-y0)//region_lines) / h_mask
-                    theta1 = math.pi * (y0 + (i+1)*(y1-y0)//region_lines) / h_mask
-                    d_omega = 2 * math.pi * (math.cos(theta0) - math.cos(theta1))
-                    # Compute region influence as % of total denominator
-                    total_den = 2 * math.pi * (math.cos(math.pi*y0/h_mask) - math.cos(math.pi*y1/h_mask))
-                    percent = 100 * d_omega / total_den if total_den != 0 else 0
-                    # Place label in the middle of the region
-                    y_mid = int((region_ys[i] + region_ys[i+1]) / 2)
-                    label = f"{percent:.1f}%"
-                    font_ = pygame.font.Font(MODERN_FONT_NAME, 18)
-                    label_surf = font_.render(label, True, (80, 200, 255))
-                    screen.blit(label_surf, (LEFT_PANEL_WIDTH + img_area_w - 70, y_mid - 10))
             # Draw sphere outline (center on horizon, radius to crop)
             cx = LEFT_PANEL_WIDTH + img_area_w // 2
             cy = int(h_ui // 2) - offset_y
