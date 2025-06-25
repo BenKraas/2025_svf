@@ -319,6 +319,7 @@ def main():
 
     svf_value = None  # Store last SVF value
     show_math_viz = False  # Toggle for SVF math visualization
+    show_horizon = False  # Toggle for always showing the horizon
 
     def draw_left_panel():
         # Draw left panel background (flat grey)
@@ -381,9 +382,11 @@ def main():
         # --- Math Viz toggle below the divider ---
         toggle_font = pygame.font.Font(MODERN_FONT_NAME, 20)
         toggle_label = "Show SVF Math Viz"
-        toggle_w, toggle_h = 220, 32
+        # Full width toggle respecting panel padding
         toggle_x = heading_margin
         toggle_y = row_bottom + 24
+        toggle_w = LEFT_PANEL_WIDTH - 2 * heading_margin
+        toggle_h = 32
         toggle_rect = pygame.Rect(toggle_x, toggle_y, toggle_w, toggle_h)
         pygame.draw.rect(screen, (60, 60, 80), toggle_rect, border_radius=8)
         if show_math_viz:
@@ -393,10 +396,25 @@ def main():
         # Toggle indicator
         ind_color = (80, 200, 255) if show_math_viz else (120, 120, 120)
         pygame.draw.circle(screen, ind_color, (toggle_rect.right - 18, toggle_rect.centery), 10)
+        # --- Horizon toggle below math viz toggle ---
+        horizon_toggle_label = "Always Show Horizon"
+        horizon_toggle_x = heading_margin
+        horizon_toggle_y = toggle_y + toggle_h + 12
+        horizon_toggle_w = LEFT_PANEL_WIDTH - 2 * heading_margin
+        horizon_toggle_h = 32
+        horizon_toggle_rect = pygame.Rect(horizon_toggle_x, horizon_toggle_y, horizon_toggle_w, horizon_toggle_h)
+        pygame.draw.rect(screen, (60, 60, 80), horizon_toggle_rect, border_radius=8)
+        if show_horizon:
+            pygame.draw.rect(screen, (80, 200, 255), horizon_toggle_rect, 0, border_radius=8)
+        horizon_label_surf = toggle_font.render(horizon_toggle_label, True, (255,255,255))
+        screen.blit(horizon_label_surf, (horizon_toggle_rect.x + 12, horizon_toggle_rect.y + 5))
+        # Toggle indicator
+        horizon_ind_color = (80, 200, 255) if show_horizon else (120, 120, 120)
+        pygame.draw.circle(screen, horizon_ind_color, (horizon_toggle_rect.right - 18, horizon_toggle_rect.centery), 10)
         # --- Letterbox crop info (automatic) ---
         info_font = pygame.font.Font(MODERN_FONT_NAME, 20)
         info_str = f"Letterbox crop (auto): {letterbox_crop}px top/bottom"
-        info_y = toggle_y + toggle_h + 18
+        info_y = horizon_toggle_y + horizon_toggle_h + 18
         info_surf = info_font.render(info_str, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
         screen.blit(info_surf, (heading_margin, info_y))
         # Move instructions to bottom, subtle
@@ -405,7 +423,7 @@ def main():
             text_surf = panel_font_subtle.render(text, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
             screen.blit(text_surf, (heading_margin, y))
             y += 22
-        return toggle_rect
+        return toggle_rect, horizon_toggle_rect
 
     def draw_status_bar():
         # Draw status bar at the bottom (flat grey, less height, text left)
@@ -566,7 +584,7 @@ def main():
     process_message = "Processing..."
 
     while running:
-        toggle_rect = draw_left_panel()
+        toggle_rect, horizon_toggle_rect = draw_left_panel()
         draw_image_area()
         draw_status_bar()
         pygame.display.flip()
@@ -640,6 +658,11 @@ def main():
                 if toggle_rect and toggle_rect.collidepoint(mx, my):
                     show_math_viz = not show_math_viz
                     status_text = f"SVF Math Viz: {'ON' if show_math_viz else 'OFF'}"
+                    continue
+                # Check if click is in horizon toggle
+                if horizon_toggle_rect and horizon_toggle_rect.collidepoint(mx, my):
+                    show_horizon = not show_horizon
+                    status_text = f"Always Show Horizon: {'ON' if show_horizon else 'OFF'}"
                     continue
                 # Check if click is in click type selector (row layout, left half, centered)
                 dot_radius = 14
