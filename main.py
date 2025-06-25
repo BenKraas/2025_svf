@@ -243,6 +243,12 @@ def main():
     processing = False
     process_message = "Processing..."
 
+    # --- Letterbox crop value ---
+    letterbox_crop = 125  # Default value in pixels
+    letterbox_input_active = False
+    letterbox_input_selected = False  # New: True if just clicked/selected
+    letterbox_input_str = str(letterbox_crop)
+
     def draw_left_panel():
         # Draw left panel background (flat grey)
         pygame.draw.rect(screen, PANEL_BG, (0, 0, LEFT_PANEL_WIDTH, window_h))
@@ -295,12 +301,30 @@ def main():
         # Divider
         row_bottom = selector_y + dot_radius + 32
         pygame.draw.line(screen, PANEL_DIVIDER, (heading_margin, row_bottom), (LEFT_PANEL_WIDTH - heading_margin, row_bottom), 2)
+        # --- Letterbox crop input box ---
+        input_label_font = pygame.font.Font(MODERN_FONT_NAME, 20)
+        input_label = input_label_font.render("Letterbox crop (px), Def. 125", MODERN_FONT_ANTIALIAS, PANEL_TEXT)
+        input_y = row_bottom + 24
+        screen.blit(input_label, (heading_margin, input_y))
+        # Draw input box right-aligned with 32px padding
+        input_box_width = 70
+        input_box_height = 28
+        input_box_x = LEFT_PANEL_WIDTH - 32 - input_box_width
+        input_box_rect = pygame.Rect(input_box_x, input_y - 2, input_box_width, input_box_height)
+        pygame.draw.rect(screen, (255,255,255) if letterbox_input_active else (180,180,180), input_box_rect, 2)
+        # Highlight text if selected
+        if letterbox_input_active and letterbox_input_selected:
+            pygame.draw.rect(screen, (80, 120, 200), input_box_rect.inflate(-4, -4))
+        input_text = panel_font.render(letterbox_input_str, MODERN_FONT_ANTIALIAS, (255,255,255))
+        screen.blit(input_text, (input_box_rect.x + 6, input_box_rect.y + 2))
         # Move instructions to bottom, subtle
         y = window_h - 28 * len(left_panel_texts) - 24
         for text in left_panel_texts:
             text_surf = panel_font_subtle.render(text, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
             screen.blit(text_surf, (heading_margin, y))
             y += 22
+
+        return input_box_rect
 
     def draw_status_bar():
         # Draw status bar at the bottom (flat grey, less height, text left)
@@ -387,12 +411,40 @@ def main():
     process_message = "Processing..."
 
     while running:
+        input_box_rect = draw_left_panel()
+        draw_image_area()
+        draw_status_bar()
+        pygame.display.flip()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 logger.info('Quit event received')
                 running = False
             elif event.type == pygame.KEYDOWN:
                 logger.debug(f'Keydown: {event.key}')
+                if letterbox_input_active:
+                    if letterbox_input_selected:
+                        # First key after click: clear field if digit or backspace
+                        if event.key == pygame.K_BACKSPACE or event.unicode.isdigit():
+                            letterbox_input_str = ''
+                        letterbox_input_selected = False
+                    if event.key == pygame.K_RETURN:
+                        try:
+                            val = int(letterbox_input_str)
+                            if 0 <= val < h:
+                                letterbox_crop = val
+                                status_text = f"Letterbox crop set to {letterbox_crop}px"
+                            else:
+                                status_text = f"Invalid crop value (0-{h-1})"
+                        except Exception:
+                            status_text = "Invalid input for crop value."
+                        letterbox_input_active = False
+                        letterbox_input_selected = False
+                    elif event.key == pygame.K_BACKSPACE:
+                        letterbox_input_str = letterbox_input_str[:-1]
+                    elif event.unicode.isdigit():
+                        if len(letterbox_input_str) < 4:
+                            letterbox_input_str += event.unicode
+                    continue  # Don't process other keys if editing input
                 if event.key == pygame.K_ESCAPE:
                     esc_count += 1
                     logger.debug(f'ESC pressed {esc_count} times')
@@ -453,6 +505,13 @@ def main():
                         status_text = f"Selected {CLICK_TYPES[idx]['name']} ({int(CLICK_TYPES[idx]['weight']*100)}%)"
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
+                if event.button == 1:  # Only left click can activate input
+                    if input_box_rect.collidepoint(mx, my):
+                        letterbox_input_active = True
+                        letterbox_input_selected = True  # Mark as selected for replacement
+                    else:
+                        letterbox_input_active = False
+                        letterbox_input_selected = False
                 # Check if click is in click type selector (row layout, left half, centered)
                 dot_radius = 14
                 sep_y = 28 + panel_heading_font.get_height() + 15
@@ -596,6 +655,11 @@ def main():
                                     logger.warning('No mask returned for area')
                         # Normalize to [0,1] (clip)
                         combined_mask = np.clip(combined_mask, 0, 1)
+                        # --- Letterbox crop: set top and bottom N pixels to black ---
+                        crop_n = int(letterbox_crop)
+                        if crop_n > 0 and crop_n * 2 < h_int:
+                            combined_mask[:crop_n, :] = 0.0
+                            combined_mask[-crop_n:, :] = 0.0
                         mask = combined_mask if np.any(combined_mask > 0) else None
                         # Save quantized mask as PNG (4 levels: 0,1,2,3,4)
                         if mask is not None:
