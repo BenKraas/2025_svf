@@ -36,6 +36,10 @@ def init_logging(name, console_level=logging.INFO, file_level=logging.DEBUG):
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
+    # Remove existing handlers to avoid duplicate logs
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
     # Console handler
     ch = logging.StreamHandler()
     ch.setLevel(console_level)
@@ -77,7 +81,6 @@ def main():
 
     # Get first image in directory
     files = [f for f in os.listdir(IMAGE_DIR) if os.path.isfile(os.path.join(IMAGE_DIR, f))]
-    logger.debug(f"Found files: {files}")
     if not files:
         logger.error(f"No images found in {IMAGE_DIR}")
         print(f"No images found in {IMAGE_DIR}")
@@ -88,21 +91,40 @@ def main():
     img = np.array(img_pil)
     h, w, _ = img.shape
 
-    # Show loading while model loads (do NOT re-log or re-setup logger/model here)
+    # --- Model loading with timing and UI counter ---
+    import time
+    from threading import Thread
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_text = f"Loading model to {'GPU' if device == 'cuda' else 'CPU'}..."
     temp_screen.fill((30, 30, 30))
-    loading_text = temp_font.render("Loading model...", True, (255, 255, 255))
+    loading_text = temp_font.render(model_text, True, (255, 255, 255))
     temp_screen.blit(loading_text, (50, 80))
     pygame.display.flip()
-    for _ in range(10):
-        pygame.event.pump()
-        pygame.time.wait(10)
+    pygame.event.pump()
 
-    # SAM setup (only once, here)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device: {device}")
-    sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
-    sam.to(device)
-    predictor = SamPredictor(sam)
+    start_time = time.time()
+    model_loaded = [None]
+    def load_model():
+        sam_local = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
+        sam_local.to(device)
+        predictor_local = SamPredictor(sam_local)
+        model_loaded[0] = (sam_local, predictor_local)
+    t = Thread(target=load_model)
+    t.start()
+    approx_time = 10  # Approximate expected load time in seconds
+    while model_loaded[0] is None:
+        elapsed = int(time.time() - start_time)
+        temp_screen.fill((30, 30, 30))
+        loading_text = temp_font.render(model_text, True, (255, 255, 255))
+        temp_screen.blit(loading_text, (50, 70))
+        counter_text = temp_font.render(f"{elapsed} sec / ~{approx_time} sec", True, (180, 180, 180))
+        temp_screen.blit(counter_text, (50, 130))
+        pygame.display.flip()
+        pygame.event.pump()
+        pygame.time.wait(200)
+    sam, predictor = model_loaded[0]
+    total_time = time.time() - start_time
+    logger.info(f"Model loaded to {device} in {total_time:.1f} seconds.")
     predictor.set_image(img)
 
     # Set up window for half-size image, but now with left panel and status bar
