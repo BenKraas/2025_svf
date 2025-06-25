@@ -248,6 +248,9 @@ def main():
     letterbox_input_active = False
     letterbox_input_selected = False  # New: True if just clicked/selected
     letterbox_input_str = str(letterbox_crop)
+    # Mouse hover coordinates (image space)
+    mouse_img_x = None
+    mouse_img_y = None
 
     def draw_left_panel():
         # Draw left panel background (flat grey)
@@ -332,6 +335,14 @@ def main():
         status_surf = status_font.render(status_text, MODERN_FONT_ANTIALIAS, STATUS_TEXT)
         # Align status text with left panel margin
         screen.blit(status_surf, (32, window_h - STATUS_BAR_HEIGHT + 6))
+        # Draw mouse hover x/y in bottom right
+        if mouse_img_x is not None and mouse_img_y is not None:
+            mouse_font = pygame.font.Font(MODERN_FONT_NAME, 16)
+            mouse_str = f"x={mouse_img_x}  y={mouse_img_y}"
+            mouse_surf = mouse_font.render(mouse_str, True, (120, 120, 120))
+            mouse_rect = mouse_surf.get_rect()
+            mouse_rect.bottomright = (window_w - 18, window_h - 6)
+            screen.blit(mouse_surf, mouse_rect)
 
     def draw_click_type_selector():
         # Floating section in top-left of image area
@@ -687,11 +698,25 @@ def main():
                 if event.button == 2:  # Only middle mouse for dragging
                     dragging = False
                     logger.info('End drag')
-            elif event.type == pygame.MOUSEMOTION and dragging:
-                dx, dy = event.rel
-                offset_x -= dx
-                offset_y -= dy
-                clamp_offsets()
+            elif event.type == pygame.MOUSEMOTION:
+                mx, my = event.pos
+                # Only update if over image area
+                if LEFT_PANEL_WIDTH <= mx < window_w and 0 <= my < img_area_h:
+                    x = mx - LEFT_PANEL_WIDTH
+                    y = my
+                    mouse_img_x = int((x + offset_x) / scale_factor)
+                    mouse_img_y = int((y + offset_y) / scale_factor)
+                    # Clamp to image bounds
+                    mouse_img_x = max(0, min(mouse_img_x, w - 1))
+                    mouse_img_y = max(0, min(mouse_img_y, h - 1))
+                else:
+                    mouse_img_x = None
+                    mouse_img_y = None
+                if dragging:
+                    dx, dy = event.rel
+                    offset_x -= dx
+                    offset_y -= dy
+                    clamp_offsets()
         # --- Always redraw the UI every frame for smooth dragging ---
         draw_left_panel()
         draw_image_area()
