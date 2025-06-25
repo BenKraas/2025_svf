@@ -16,12 +16,19 @@ SAM_WEIGHTS_PATH = "sam_vit_h_4b8939.pth"  # SAM weights file
 RESULTS_DIR = "results"
 CACHE_DIR = "cache"
 
-# UI Layout constants
-LEFT_PANEL_WIDTH = 320
-STATUS_BAR_HEIGHT = 48
-PANEL_BG = (40, 40, 60)
-PANEL_TEXT = (255, 255, 255)
-PANEL_HEADING = (180, 220, 255)
+# UI Layout constants (single source of truth)
+LEFT_PANEL_WIDTH = 420  # wider UI
+STATUS_BAR_HEIGHT = 32
+MODERN_FONT_NAME = pygame.font.match_font('segoeui,arial,liberationsans,sansserif') or None
+MODERN_FONT_ANTIALIAS = True
+PANEL_BG = (38, 38, 42)
+PANEL_BORDER = (60, 60, 70)
+PANEL_HEADING = (220, 220, 230)
+PANEL_TEXT = (210, 210, 210)
+PANEL_SUBTLE = (140, 140, 150)
+PANEL_DIVIDER = (80, 80, 90)
+STATUS_BG = (28, 28, 30)
+STATUS_TEXT = (160, 160, 170)
 
 # Logging initialization
 def init_logging(name, console_level=logging.INFO, file_level=logging.DEBUG):
@@ -60,7 +67,6 @@ def main():
     loading_text = temp_font.render("Loading image and model...", True, (255, 255, 255))
     temp_screen.blit(loading_text, (50, 80))
     pygame.display.flip()
-    # Allow window to update
     for _ in range(10):
         pygame.event.pump()
         pygame.time.wait(10)
@@ -82,15 +88,37 @@ def main():
     img = np.array(img_pil)
     h, w, _ = img.shape
 
+    # Show loading while model loads (do NOT re-log or re-setup logger/model here)
+    temp_screen.fill((30, 30, 30))
+    loading_text = temp_font.render("Loading model...", True, (255, 255, 255))
+    temp_screen.blit(loading_text, (50, 80))
+    pygame.display.flip()
+    for _ in range(10):
+        pygame.event.pump()
+        pygame.time.wait(10)
+
+    # SAM setup (only once, here)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+    sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
+    sam.to(device)
+    predictor = SamPredictor(sam)
+    predictor.set_image(img)
+
     # Set up window for half-size image, but now with left panel and status bar
-    base_scale = 0.5
-    scale_factor = base_scale
-    w_ui, h_ui = int(w * scale_factor), int(h * scale_factor)
     # Window size: left panel + image area, status bar at bottom
-    window_w = LEFT_PANEL_WIDTH + min(w_ui, 1200)
-    window_h = min(h_ui, 900) + STATUS_BAR_HEIGHT
+    window_w = LEFT_PANEL_WIDTH + min(int(w * 1.0), 1600)  # use 1.0 for max possible width
+    window_h = min(int(h * 1.0), 900) + STATUS_BAR_HEIGHT
     img_area_w = window_w - LEFT_PANEL_WIDTH
     img_area_h = window_h - STATUS_BAR_HEIGHT
+
+    # --- Zoom limits (must be after img_area_w/h, w, h are known) ---
+    MIN_SCALE = max(img_area_w / w, img_area_h / h, 0.2)  # Never let image be smaller than area
+    MAX_SCALE = 1.5  # Lower max zoom for performance
+
+    base_scale = MIN_SCALE  # Start at lowest possible zoom
+    scale_factor = base_scale
+    w_ui, h_ui = int(w * scale_factor), int(h * scale_factor)
     img_ui = np.array(Image.fromarray(img).resize((w_ui, h_ui), Image.LANCZOS))
     screen = pygame.display.set_mode((window_w, window_h))
     pygame.display.set_caption(f"SAM Segmenter - {files[0]}")
@@ -122,19 +150,12 @@ def main():
         pygame.event.pump()
         pygame.time.wait(10)
 
-    # SAM setup
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device: {device}")
-    sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
-    sam.to(device)
-    predictor = SamPredictor(sam)
-    predictor.set_image(img)
-
     pygame.font.init()
-    font = pygame.font.SysFont(None, 28)
-    panel_font = pygame.font.SysFont(None, 24)
-    panel_heading_font = pygame.font.SysFont(None, 32, bold=True)
-    status_font = pygame.font.SysFont(None, 26)
+    font = pygame.font.Font(MODERN_FONT_NAME, 28)
+    panel_font = pygame.font.Font(MODERN_FONT_NAME, 22)
+    panel_font_subtle = pygame.font.Font(MODERN_FONT_NAME, 18)
+    panel_heading_font = pygame.font.Font(MODERN_FONT_NAME, 32)
+    status_font = pygame.font.Font(MODERN_FONT_NAME, 20)
     # All non-status texts for the left panel
     left_panel_texts = [
         "Left click: add point (new area)",
@@ -184,25 +205,27 @@ def main():
     process_message = "Processing..."
 
     def draw_left_panel():
-        # Draw left panel background
+        # Draw left panel background (flat grey)
         pygame.draw.rect(screen, PANEL_BG, (0, 0, LEFT_PANEL_WIDTH, window_h))
+        # Panel border (right edge)
+        pygame.draw.line(screen, PANEL_BORDER, (LEFT_PANEL_WIDTH - 1, 0), (LEFT_PANEL_WIDTH - 1, window_h), 2)
         # Heading
-        heading_surf = panel_heading_font.render("SAM SVF Calculation", True, PANEL_HEADING)
-        screen.blit(heading_surf, (20, 24))
+        heading_surf = panel_heading_font.render("SAM SVF Calculation", MODERN_FONT_ANTIALIAS, PANEL_HEADING)
+        screen.blit(heading_surf, (28, 28))
         # Divider
-        pygame.draw.line(screen, (80, 100, 140), (20, 70), (LEFT_PANEL_WIDTH - 20, 70), 2)
-        # Instructions
-        y = 90
+        pygame.draw.line(screen, PANEL_DIVIDER, (24, 80), (LEFT_PANEL_WIDTH - 24, 80), 2)
+        # Move instructions to bottom, subtle
+        y = window_h - 28 * len(left_panel_texts) - 24
         for text in left_panel_texts:
-            text_surf = panel_font.render(text, True, PANEL_TEXT)
-            screen.blit(text_surf, (24, y))
-            y += 32
+            text_surf = panel_font_subtle.render(text, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
+            screen.blit(text_surf, (28, y))
+            y += 22
 
     def draw_status_bar():
-        # Draw status bar at the bottom
-        pygame.draw.rect(screen, (30, 30, 30), (0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT))
-        status_surf = status_font.render(status_text, True, (255, 255, 0))
-        screen.blit(status_surf, (LEFT_PANEL_WIDTH + 16, window_h - STATUS_BAR_HEIGHT + 12))
+        # Draw status bar at the bottom (flat grey, less height, text left)
+        pygame.draw.rect(screen, STATUS_BG, (0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT))
+        status_surf = status_font.render(status_text, MODERN_FONT_ANTIALIAS, STATUS_TEXT)
+        screen.blit(status_surf, (16, window_h - STATUS_BAR_HEIGHT + 6))
 
     def draw_image_area():
         # Draw checkerboard background for transparency debug (in image area)
@@ -224,137 +247,22 @@ def main():
             purple_mask_ui[..., 1] = 0
             purple_mask_ui[..., 2] = 128
             purple_mask_ui[..., 3] = (mask_ui > 0) * int(0.6 * 255)
-            crop_x0, crop_x1 = offset_x, offset_x + img_area_w
-            crop_y0, crop_y1 = offset_y, offset_y + img_area_h
-            purple_crop = purple_mask_ui[crop_y0:crop_y1, crop_x0:crop_x1]
-            purple_surf = pygame.image.frombuffer(purple_crop.tobytes(), (img_area_w, img_area_h), 'RGBA').convert_alpha()
-            screen.blit(purple_surf, (LEFT_PANEL_WIDTH, 0))
-        # Draw green points with black outline for all areas (map to UI scale, scrolled) ABOVE the mask
-        point_radius = 7
-        for area in area_manager.get_all():
-            for px, py in area:
-                sx = int(px * scale_factor) - offset_x
-                sy = int(py * scale_factor) - offset_y
-                if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
-                    pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
-                    pygame.draw.circle(screen, (0, 255, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius)
-
-    # Show loading while model loads
-    screen.fill((30, 30, 30))
-    loading_text = temp_font.render("Loading model...", True, (255, 255, 255))
-    screen.blit(loading_text, (LEFT_PANEL_WIDTH + img_area_w // 2 - 180, img_area_h // 2 - 24))
-    pygame.display.flip()
-    for _ in range(10):
-        pygame.event.pump()
-        pygame.time.wait(10)
-
-    # SAM setup
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device: {device}")
-    sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
-    sam.to(device)
-    predictor = SamPredictor(sam)
-    predictor.set_image(img)
-
-    pygame.font.init()
-    font = pygame.font.SysFont(None, 28)
-    panel_font = pygame.font.SysFont(None, 24)
-    panel_heading_font = pygame.font.SysFont(None, 32, bold=True)
-    status_font = pygame.font.SysFont(None, 26)
-    # All non-status texts for the left panel
-    left_panel_texts = [
-        "Left click: add point (new area)",
-        "Right click: remove point",
-        "R: reset",
-        "ESC x3: quit",
-        "Pan: middle mouse or Ctrl+left drag",
-        "Arrow keys: scroll",
-        "+/- or Ctrl+wheel: zoom"
-    ]
-    status_text = "Add points to segment."
-
-    class PointAreasManager:
-        def __init__(self):
-            self.areas = [[]]  # List of lists of (x, y)
-            self.current = 0
-        def add_point(self, x, y):
-            self.areas[self.current].append((x, y))
-        def remove_last(self):
-            if self.areas[self.current]:
-                self.areas[self.current].pop()
-        def new_area(self):
-            self.areas.append([])
-            self.current = len(self.areas) - 1
-        def clear(self):
-            self.areas = [[]]
-            self.current = 0
-        def get_all(self):
-            return self.areas
-        def get_current(self):
-            return self.areas[self.current]
-        def set_current(self, idx):
-            if 0 <= idx < len(self.areas):
-                self.current = idx
-        def __len__(self):
-            return sum(len(a) for a in self.areas)
-
-    area_manager = PointAreasManager()
-    masks = []
-    esc_count = 0
-    mask = None
-    masked_surf = None
-
-    clock = pygame.time.Clock()
-    running = True
-    processing = False
-    process_message = "Processing..."
-
-    def draw_left_panel():
-        # Draw left panel background
-        pygame.draw.rect(screen, PANEL_BG, (0, 0, LEFT_PANEL_WIDTH, window_h))
-        # Heading
-        heading_surf = panel_heading_font.render("SAM SVF Calculation", True, PANEL_HEADING)
-        screen.blit(heading_surf, (20, 24))
-        # Divider
-        pygame.draw.line(screen, (80, 100, 140), (20, 70), (LEFT_PANEL_WIDTH - 20, 70), 2)
-        # Instructions
-        y = 90
-        for text in left_panel_texts:
-            text_surf = panel_font.render(text, True, PANEL_TEXT)
-            screen.blit(text_surf, (24, y))
-            y += 32
-
-    def draw_status_bar():
-        # Draw status bar at the bottom
-        pygame.draw.rect(screen, (30, 30, 30), (0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT))
-        status_surf = status_font.render(status_text, True, (255, 255, 0))
-        screen.blit(status_surf, (LEFT_PANEL_WIDTH + 16, window_h - STATUS_BAR_HEIGHT + 12))
-
-    def draw_image_area():
-        # Draw checkerboard background for transparency debug (in image area)
-        checker_size = 20
-        for y in range(0, img_area_h, checker_size):
-            for x in range(0, img_area_w, checker_size):
-                color = (180, 180, 180) if (x // checker_size + y // checker_size) % 2 == 0 else (100, 100, 100)
-                pygame.draw.rect(screen, color, (LEFT_PANEL_WIDTH + x, y, checker_size, checker_size))
-        # Draw base image (UI image, scrolled) as the lowest layer
-        img_rect = pygame.Rect(offset_x, offset_y, img_area_w, img_area_h)
-        surf = pygame.surfarray.make_surface(img_ui.swapaxes(0, 1))
-        screen.blit(surf, (LEFT_PANEL_WIDTH, 0), img_rect)
-        # Overlay improved mask as purple with 0.6 opacity (downscale for UI, scrolled)
-        if mask is not None:
-            mask_bin = (mask > 0.5).astype(np.uint8)
-            mask_ui = np.array(Image.fromarray(mask_bin * 255).resize((w_ui, h_ui), Image.NEAREST))
-            purple_mask_ui = np.zeros((h_ui, w_ui, 4), dtype=np.uint8)
-            purple_mask_ui[..., 0] = 128
-            purple_mask_ui[..., 1] = 0
-            purple_mask_ui[..., 2] = 128
-            purple_mask_ui[..., 3] = (mask_ui > 0) * int(0.6 * 255)
-            crop_x0, crop_x1 = offset_x, offset_x + img_area_w
-            crop_y0, crop_y1 = offset_y, offset_y + img_area_h
-            purple_crop = purple_mask_ui[crop_y0:crop_y1, crop_x0:crop_x1]
-            purple_surf = pygame.image.frombuffer(purple_crop.tobytes(), (img_area_w, img_area_h), 'RGBA').convert_alpha()
-            screen.blit(purple_surf, (LEFT_PANEL_WIDTH, 0))
+            # Clamp crop coordinates to valid range
+            crop_x0 = max(0, offset_x)
+            crop_x1 = min(w_ui, offset_x + img_area_w)
+            crop_y0 = max(0, offset_y)
+            crop_y1 = min(h_ui, offset_y + img_area_h)
+            crop_w = max(0, crop_x1 - crop_x0)
+            crop_h = max(0, crop_y1 - crop_y0)
+            if crop_w > 0 and crop_h > 0:
+                purple_crop = purple_mask_ui[crop_y0:crop_y1, crop_x0:crop_x1]
+                # Pad if needed (when image is smaller than area)
+                pad_w = img_area_w - crop_w
+                pad_h = img_area_h - crop_h
+                if pad_w > 0 or pad_h > 0:
+                    purple_crop = np.pad(purple_crop, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant')
+                purple_surf = pygame.image.frombuffer(purple_crop.tobytes(), (img_area_w, img_area_h), 'RGBA').convert_alpha()
+                screen.blit(purple_surf, (LEFT_PANEL_WIDTH, 0))
         # Draw green points with black outline for all areas (map to UI scale, scrolled) ABOVE the mask
         point_radius = 7
         for area in area_manager.get_all():
@@ -391,6 +299,7 @@ def main():
                     masks.clear()
                     esc_count = 0
                     status_text = "Reset. Add points to segment."
+                    mask = None  # Clear the mask overlay as well
                 elif event.key == pygame.K_LEFT:
                     offset_x -= 50
                     clamp_offsets()
@@ -410,10 +319,10 @@ def main():
                 elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
                     # Zoom in
                     old_scale = scale_factor
-                    scale_factor = min(2.0, scale_factor * 1.2)
+                    scale_factor = min(MAX_SCALE, scale_factor * 1.2)
+                    scale_factor = max(MIN_SCALE, scale_factor)
                     logger.info(f'Zoom in: scale_factor={scale_factor}')
                     update_ui_image()
-                    # Adjust offset to keep zoom center
                     mx, my = zoom_center
                     offset_x = int((offset_x + mx) * scale_factor / old_scale - mx)
                     offset_y = int((offset_y + my - 60) * scale_factor / old_scale - (my - 60))
@@ -421,7 +330,8 @@ def main():
                 elif event.key == pygame.K_MINUS:
                     # Zoom out
                     old_scale = scale_factor
-                    scale_factor = max(0.1, scale_factor / 1.2)
+                    scale_factor = max(MIN_SCALE, scale_factor / 1.2)
+                    scale_factor = min(MAX_SCALE, scale_factor)
                     logger.info(f'Zoom out: scale_factor={scale_factor}')
                     update_ui_image()
                     mx, my = zoom_center
@@ -441,7 +351,8 @@ def main():
                 elif event.button == 4:  # Mouse wheel up
                     if pygame.key.get_mods() & pygame.KMOD_CTRL:
                         old_scale = scale_factor
-                        scale_factor = min(2.0, scale_factor * 1.2)
+                        scale_factor = min(MAX_SCALE, scale_factor * 1.2)
+                        scale_factor = max(MIN_SCALE, scale_factor)
                         logger.info(f'Zoom in (ctrl+wheel): scale_factor={scale_factor}')
                         update_ui_image()
                         offset_x = int((offset_x + x) * scale_factor / old_scale - x)
@@ -450,7 +361,8 @@ def main():
                 elif event.button == 5:  # Mouse wheel down
                     if pygame.key.get_mods() & pygame.KMOD_CTRL:
                         old_scale = scale_factor
-                        scale_factor = max(0.1, scale_factor / 1.2)
+                        scale_factor = max(MIN_SCALE, scale_factor / 1.2)
+                        scale_factor = min(MAX_SCALE, scale_factor)
                         logger.info(f'Zoom out (ctrl+wheel): scale_factor={scale_factor}')
                         update_ui_image()
                         offset_x = int((offset_x + x) * scale_factor / old_scale - x)
