@@ -80,13 +80,16 @@ def main():
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
 
-    # Get first image in directory
+    # Get first image in directory, prefer test.jpg if present
     files = [f for f in os.listdir(IMAGE_DIR) if os.path.isfile(os.path.join(IMAGE_DIR, f))]
     if not files:
         logger.error(f"No images found in {IMAGE_DIR}")
         print(f"No images found in {IMAGE_DIR}")
         return
-    image_path = os.path.join(IMAGE_DIR, files[0])
+    # Prefer 'test.jpg' (case-insensitive), else first file
+    preferred = next((f for f in files if f.lower() == "test.jpg"), None)
+    image_file = preferred if preferred else files[0]
+    image_path = os.path.join(IMAGE_DIR, image_file)
     logger.info(f"Loading image: {image_path}")
     img_pil = Image.open(image_path).convert("RGB")
     img = np.array(img_pil)
@@ -244,13 +247,64 @@ def main():
     process_message = "Processing..."
 
     # --- Letterbox crop value ---
-    letterbox_crop = 125  # Default value in pixels
-    letterbox_input_active = False
-    letterbox_input_selected = False  # New: True if just clicked/selected
-    letterbox_input_str = str(letterbox_crop)
+    # Automatically calculate letterbox crop for equirectangular images
+    # For a perfect equirectangular: width = 2 * height, so crop = 0
+    # If image is taller: crop = (h_img - w_img // 2) // 2
+    letterbox_crop = max(0, (h_img - w_img // 2) // 2)
     # Mouse hover coordinates (image space)
     mouse_img_x = None
     mouse_img_y = None
+
+    def compute_svf(mask, crop, h):
+        """
+        Compute Sky View Factor (SVF) from a weighted mask and crop value using solid angle integration.
+
+        This function implements the correct spherical projection weighting for equirectangular images, as required for
+        physically meaningful SVF (Sky View Factor) calculations. The algorithm is based on the solid angle subtended by
+        each row of pixels, as described by Paul Bourke:
+        - https://paulbourke.net/dome/fisheye/
+        - https://en.wikipedia.org/wiki/Solid_angle
+
+        Args:
+            mask: 2D numpy array, weighted mask (values in [0,1], where 0=obstacle/ground, 1=full sky, intermediate=partial sky)
+            crop: number of pixels cropped from top (letterbox, i.e. north pole)
+            h: image height (pixels)
+        Returns:
+            SVF as a float in [0,1], where 1.0 means all sky, 0.0 means all blocked
+
+        Algorithm:
+        - For each row y from crop to h//2 (zenith to horizon):
+            - θ0 = π * y / h      (top of row, zenith angle)
+            - θ1 = π * (y+1) / h  (bottom of row)
+            - Solid angle for row: dΩ_row = 2π * (cos(θ0) - cos(θ1))
+            - Fraction of sky in row: mean(mask[y, :])  # weighted sky fraction
+            - Add dΩ_row * (sky_frac) to numerator
+            - Add dΩ_row to denominator
+        - SVF = numerator / denominator
+        - If all pixels are sky, SVF = 1.0
+        - If all pixels are blocked, SVF = 0.0
+        """
+        import math
+        y0 = int(crop)
+        y1 = h // 2  # Only zenith to horizon
+        if y1 <= y0:
+            return 0.0
+        w = mask.shape[1]
+        svf_num = 0.0
+        svf_den = 0.0
+        for y in range(y0, y1):
+            theta0 = math.pi * y / h
+            theta1 = math.pi * (y + 1) / h
+            d_omega_row = 2 * math.pi * (math.cos(theta0) - math.cos(theta1))
+            sky_frac = np.mean(mask[y, :])  # weighted sky fraction
+            svf_num += d_omega_row * sky_frac
+            svf_den += d_omega_row
+        if svf_den == 0:
+            return 0.0
+        return svf_num / svf_den
+
+    svf_value = None  # Store last SVF value
+    show_math_viz = False  # Toggle for SVF math visualization
 
     def draw_left_panel():
         # Draw left panel background (flat grey)
@@ -264,19 +318,13 @@ def main():
         # Separator below heading
         sep_y = 28 + panel_heading_font.get_height() + 15
         pygame.draw.line(screen, PANEL_DIVIDER, (heading_margin, sep_y), (LEFT_PANEL_WIDTH - heading_margin, sep_y), 2)
-        # --- Draw click type selector in a single row, centered in left half ---
+        # --- Click type selector (4 in a row, left of SVF text) ---
         dot_radius = 14
         selector_y = sep_y + 32
-        panel_half = LEFT_PANEL_WIDTH // 2
-        dots_area_width = panel_half - 2 * heading_margin
         n_dots = len(CLICK_TYPES)
-        if n_dots > 1:
-            spacing_x = dots_area_width // (n_dots - 1)
-        else:
-            spacing_x = 0
-        selector_x_start = heading_margin + dot_radius  # shift right by one dot width
-        dots_row_center = selector_x_start + (dots_area_width // 2)
-        # Center the row of dots in the left half
+        dots_area_width = 180
+        selector_x_start = heading_margin + 10  # Respect left padding
+        spacing_x = dots_area_width // (n_dots - 1) if n_dots > 1 else 0
         dot_centers = []
         for i, t in enumerate(CLICK_TYPES):
             cx = selector_x_start + i * spacing_x
@@ -284,50 +332,66 @@ def main():
             dot_centers.append((cx, cy))
             # Draw background highlight if selected
             if i == active_click_type:
-                pygame.gfxdraw.filled_circle(screen, cx, cy, dot_radius + 5, (255, 255, 255))
-            # Antialiased color dot
-            pygame.gfxdraw.aacircle(screen, cx, cy, dot_radius, t["color"])
-            pygame.gfxdraw.filled_circle(screen, cx, cy, dot_radius, t["color"])
+                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), dot_radius + 6)
+            pygame.draw.circle(screen, t["color"], (cx, cy), dot_radius)
             # Draw border
-            pygame.gfxdraw.aacircle(screen, cx, cy, dot_radius, (40, 40, 40))
-            pygame.gfxdraw.aacircle(screen, cx, cy, dot_radius-1, (40, 40, 40))
-            # Percentage label below
-            label = panel_font_subtle.render(f"{int(t['weight']*100)}%", MODERN_FONT_ANTIALIAS, (255,255,255))
-            label_rect = label.get_rect(center=(cx, cy + dot_radius + 16))
-            screen.blit(label, label_rect)
+            pygame.draw.circle(screen, (40, 40, 40), (cx, cy), dot_radius, 3)
+        # Draw percentages below each dot
+        percent_font = pygame.font.Font(MODERN_FONT_NAME, 16)
+        for i, t in enumerate(CLICK_TYPES):
+            cx, cy = dot_centers[i]
+            percent_label = f"{int(t['weight']*100)}%"
+            percent_surf = percent_font.render(percent_label, MODERN_FONT_ANTIALIAS, (255,255,255))
+            percent_rect = percent_surf.get_rect(center=(cx, cy + dot_radius + 14))
+            screen.blit(percent_surf, percent_rect)
         # --- SVF (%) label to the right of the dots, vertically centered, larger and bolder ---
         svf_label_font = pygame.font.Font(MODERN_FONT_NAME, 24)
         svf_label = svf_label_font.render("SVF (%)", True, (220, 220, 230))
-        label_x = panel_half + (LEFT_PANEL_WIDTH - panel_half) // 2
-        label_rect = svf_label.get_rect(center=(label_x, selector_y))
+        right_padding = 32
+        svf_label_x = LEFT_PANEL_WIDTH - right_padding - svf_label.get_width() // 2
+        label_rect = svf_label.get_rect(center=(svf_label_x, selector_y))
         screen.blit(svf_label, label_rect)
-        # Divider
+        # --- SVF value below label ---
+        if svf_value is not None:
+            svf_val_font = pygame.font.Font(MODERN_FONT_NAME, 28)
+            svf_val_str = f"{svf_value*100:.3f}"
+            svf_val_surf = svf_val_font.render(svf_val_str, True, (80, 200, 255))
+            svf_val_x = LEFT_PANEL_WIDTH - right_padding - svf_val_surf.get_width() // 2
+            row_bottom = selector_y + dot_radius + 32
+            center_y = (selector_y + row_bottom) // 2
+            val_rect = svf_val_surf.get_rect(center=(svf_val_x, center_y))
+            screen.blit(svf_val_surf, val_rect)
+        # Divider below SVF value
         row_bottom = selector_y + dot_radius + 32
         pygame.draw.line(screen, PANEL_DIVIDER, (heading_margin, row_bottom), (LEFT_PANEL_WIDTH - heading_margin, row_bottom), 2)
-        # --- Letterbox crop input box ---
-        input_label_font = pygame.font.Font(MODERN_FONT_NAME, 20)
-        input_label = input_label_font.render("Letterbox crop (px), Def. 125", MODERN_FONT_ANTIALIAS, PANEL_TEXT)
-        input_y = row_bottom + 24
-        screen.blit(input_label, (heading_margin, input_y))
-        # Draw input box right-aligned with 32px padding
-        input_box_width = 70
-        input_box_height = 28
-        input_box_x = LEFT_PANEL_WIDTH - 32 - input_box_width
-        input_box_rect = pygame.Rect(input_box_x, input_y - 2, input_box_width, input_box_height)
-        pygame.draw.rect(screen, (255,255,255) if letterbox_input_active else (180,180,180), input_box_rect, 2)
-        # Highlight text if selected
-        if letterbox_input_active and letterbox_input_selected:
-            pygame.draw.rect(screen, (80, 120, 200), input_box_rect.inflate(-4, -4))
-        input_text = panel_font.render(letterbox_input_str, MODERN_FONT_ANTIALIAS, (255,255,255))
-        screen.blit(input_text, (input_box_rect.x + 6, input_box_rect.y + 2))
+        # --- Math Viz toggle below the divider ---
+        toggle_font = pygame.font.Font(MODERN_FONT_NAME, 20)
+        toggle_label = "Show SVF Math Viz"
+        toggle_w, toggle_h = 220, 32
+        toggle_x = heading_margin
+        toggle_y = row_bottom + 24
+        toggle_rect = pygame.Rect(toggle_x, toggle_y, toggle_w, toggle_h)
+        pygame.draw.rect(screen, (60, 60, 80), toggle_rect, border_radius=8)
+        if show_math_viz:
+            pygame.draw.rect(screen, (80, 200, 255), toggle_rect, 0, border_radius=8)
+        label_surf = toggle_font.render(toggle_label, True, (255,255,255))
+        screen.blit(label_surf, (toggle_rect.x + 12, toggle_rect.y + 5))
+        # Toggle indicator
+        ind_color = (80, 200, 255) if show_math_viz else (120, 120, 120)
+        pygame.draw.circle(screen, ind_color, (toggle_rect.right - 18, toggle_rect.centery), 10)
+        # --- Letterbox crop info (automatic) ---
+        info_font = pygame.font.Font(MODERN_FONT_NAME, 20)
+        info_str = f"Letterbox crop (auto): {letterbox_crop}px top/bottom"
+        info_y = toggle_y + toggle_h + 18
+        info_surf = info_font.render(info_str, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
+        screen.blit(info_surf, (heading_margin, info_y))
         # Move instructions to bottom, subtle
         y = window_h - 28 * len(left_panel_texts) - 24
         for text in left_panel_texts:
             text_surf = panel_font_subtle.render(text, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
             screen.blit(text_surf, (heading_margin, y))
             y += 22
-
-        return input_box_rect
+        return toggle_rect
 
     def draw_status_bar():
         # Draw status bar at the bottom (flat grey, less height, text left)
@@ -413,6 +477,94 @@ def main():
                 if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
                     pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
                     pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
+        # --- SVF Math Visualization ---
+        if show_math_viz:
+            # Draw horizon (green)
+            horizon_y = int(h_ui // 2) - offset_y
+            if 0 <= horizon_y < img_area_h:
+                pygame.draw.line(screen, (0, 255, 0), (LEFT_PANEL_WIDTH, horizon_y), (LEFT_PANEL_WIDTH + img_area_w, horizon_y), 3)
+            # Draw crop areas (pink, alpha 1.0)
+            crop_n = int(letterbox_crop * scale_factor)
+            if crop_n > 0:
+                # Top crop
+                crop_rect_top = pygame.Rect(LEFT_PANEL_WIDTH, -offset_y, img_area_w, crop_n)
+                crop_surf = pygame.Surface((img_area_w, crop_n), pygame.SRCALPHA)
+                crop_surf.fill((255, 80, 180, 255))
+                screen.blit(crop_surf, crop_rect_top)
+                # Bottom crop
+                crop_rect_bot = pygame.Rect(LEFT_PANEL_WIDTH, h_ui - crop_n - offset_y, img_area_w, crop_n)
+                crop_surf2 = pygame.Surface((img_area_w, crop_n), pygame.SRCALPHA)
+                crop_surf2.fill((255, 80, 180, 255))
+                screen.blit(crop_surf2, crop_rect_bot)
+            # Draw 5 blue dashed lines and annotate 6 regions
+            region_lines = 6
+            region_ys = []
+            for i in range(region_lines + 1):
+                frac = i / region_lines
+                y = int((crop_n + frac * (h_ui//2 - crop_n)) - offset_y)
+                region_ys.append(y)
+                if 0 <= y < img_area_h:
+                    # Draw dashed blue line
+                    for x in range(LEFT_PANEL_WIDTH, LEFT_PANEL_WIDTH + img_area_w, 20):
+                        pygame.draw.line(screen, (80, 160, 255), (x, y), (x+10, y), 2)
+            # Annotate % influence for each region
+            if mask is not None:
+                import math
+                h_mask = mask.shape[0]
+                w_mask = mask.shape[1]
+                y0 = int(letterbox_crop)
+                y1 = h_mask // 2
+                for i in range(region_lines):
+                    # Compute theta0/theta1 for region
+                    theta0 = math.pi * (y0 + (i)*(y1-y0)//region_lines) / h_mask
+                    theta1 = math.pi * (y0 + (i+1)*(y1-y0)//region_lines) / h_mask
+                    d_omega = 2 * math.pi * (math.cos(theta0) - math.cos(theta1))
+                    # Compute region influence as % of total denominator
+                    total_den = 2 * math.pi * (math.cos(math.pi*y0/h_mask) - math.cos(math.pi*y1/h_mask))
+                    percent = 100 * d_omega / total_den if total_den != 0 else 0
+                    # Place label in the middle of the region
+                    y_mid = int((region_ys[i] + region_ys[i+1]) / 2)
+                    label = f"{percent:.1f}%"
+                    font_ = pygame.font.Font(MODERN_FONT_NAME, 18)
+                    label_surf = font_.render(label, True, (80, 200, 255))
+                    screen.blit(label_surf, (LEFT_PANEL_WIDTH + img_area_w - 70, y_mid - 10))
+            # Draw sphere outline (center on horizon, radius to crop)
+            cx = LEFT_PANEL_WIDTH + img_area_w // 2
+            cy = int(h_ui // 2) - offset_y
+            radius = int((h_ui // 2) - crop_n)
+            if radius > 0:
+                pygame.gfxdraw.aacircle(screen, cx, cy, radius, (200, 255, 255))
+                # --- Draw 5 lines from center to intersection with each region line (except horizon) ---
+                for i in range(1, region_lines):
+                    y = region_ys[i]
+                    if 0 <= y < img_area_h:
+                        # Intersection with circle: (y - cy)^2 + (x - cx)^2 = r^2
+                        # For horizontal line y, solve for x:
+                        dy = y - cy
+                        if abs(dy) <= radius:
+                            dx = int((radius**2 - dy**2) ** 0.5)
+                            for sign in [-1, 1]:
+                                x_int = cx + sign * dx
+                                pygame.draw.line(screen, (80, 160, 255), (cx, cy), (x_int, y), 2)
+                                # Draw angle at intersection (zenith angle from horizon)
+                                import math
+                                # Angle from horizon: theta = arcsin(-dy/radius) (zenith from horizon)
+                                theta_rad = math.asin(-dy / radius)
+                                theta_deg = theta_rad * 180 / math.pi
+                                angle_label = f"{theta_deg:+.1f}°"
+                                font_angle = pygame.font.Font(MODERN_FONT_NAME, 16)
+                                label_surf = font_angle.render(angle_label, True, (255, 255, 0))
+                                # Offset label a bit from intersection
+                                label_rect = label_surf.get_rect(center=(x_int + 30*sign, y - 10))
+                                screen.blit(label_surf, label_rect)
+                # --- Draw two ellipses to indicate 3D ---
+                ellipse_color = (120, 255, 255)
+                # Horizontal ellipse (equator): full width, 1/3 height
+                rect_horiz = pygame.Rect(cx - radius, cy - radius//6, 2*radius, radius//3)
+                pygame.draw.ellipse(screen, ellipse_color, rect_horiz, 2)
+                # Vertical ellipse (meridian): 1/3 width, full height
+                rect_vert = pygame.Rect(cx - radius//6, cy - radius, radius//3, 2*radius)
+                pygame.draw.ellipse(screen, ellipse_color, rect_vert, 2)
 
     esc_count = 0
     save_mask = False
@@ -422,7 +574,7 @@ def main():
     process_message = "Processing..."
 
     while running:
-        input_box_rect = draw_left_panel()
+        toggle_rect = draw_left_panel()
         draw_image_area()
         draw_status_bar()
         pygame.display.flip()
@@ -432,30 +584,6 @@ def main():
                 running = False
             elif event.type == pygame.KEYDOWN:
                 logger.debug(f'Keydown: {event.key}')
-                if letterbox_input_active:
-                    if letterbox_input_selected:
-                        # First key after click: clear field if digit or backspace
-                        if event.key == pygame.K_BACKSPACE or event.unicode.isdigit():
-                            letterbox_input_str = ''
-                        letterbox_input_selected = False
-                    if event.key == pygame.K_RETURN:
-                        try:
-                            val = int(letterbox_input_str)
-                            if 0 <= val < h:
-                                letterbox_crop = val
-                                status_text = f"Letterbox crop set to {letterbox_crop}px"
-                            else:
-                                status_text = f"Invalid crop value (0-{h-1})"
-                        except Exception:
-                            status_text = "Invalid input for crop value."
-                        letterbox_input_active = False
-                        letterbox_input_selected = False
-                    elif event.key == pygame.K_BACKSPACE:
-                        letterbox_input_str = letterbox_input_str[:-1]
-                    elif event.unicode.isdigit():
-                        if len(letterbox_input_str) < 4:
-                            letterbox_input_str += event.unicode
-                    continue  # Don't process other keys if editing input
                 if event.key == pygame.K_ESCAPE:
                     esc_count += 1
                     logger.debug(f'ESC pressed {esc_count} times')
@@ -516,13 +644,11 @@ def main():
                         status_text = f"Selected {CLICK_TYPES[idx]['name']} ({int(CLICK_TYPES[idx]['weight']*100)}%)"
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
-                if event.button == 1:  # Only left click can activate input
-                    if input_box_rect.collidepoint(mx, my):
-                        letterbox_input_active = True
-                        letterbox_input_selected = True  # Mark as selected for replacement
-                    else:
-                        letterbox_input_active = False
-                        letterbox_input_selected = False
+                # Check if click is in math viz toggle (now in left panel)
+                if toggle_rect and toggle_rect.collidepoint(mx, my):
+                    show_math_viz = not show_math_viz
+                    status_text = f"SVF Math Viz: {'ON' if show_math_viz else 'OFF'}"
+                    continue
                 # Check if click is in click type selector (row layout, left half, centered)
                 dot_radius = 14
                 sep_y = 28 + panel_heading_font.get_height() + 15
@@ -684,6 +810,9 @@ def main():
                             img_out_mask = Image.fromarray(quantized_5level, mode='L')
                             img_out_mask.save(out_path_mask)
                             logger.info(f"Saved mask PNG to {out_path_mask}")
+                            # --- SVF calculation ---
+                            svf_value = compute_svf(mask, crop=letterbox_crop, h=h)
+                            logger.info(f"SVF: {svf_value*100:.1f}%")
                         processing = False
                         status_text = prev_status_text
                         # --- UI update after mask prediction ---
