@@ -123,7 +123,7 @@ def main():
     pygame.font.init()
     font = pygame.font.SysFont(None, 28)
     info_text = (
-        "Left click: add point | Right click: remove last point | R: reset | ESC x3: quit"
+        "Left click: add point | Right click: remove point | R: reset | ESC x3: quit | Pan: middle mouse or Ctrl+left drag"
     )
     status_text = "Add points to segment."
 
@@ -182,9 +182,6 @@ def main():
                     masks.clear()
                     esc_count = 0
                     status_text = "Reset. Add points to segment."
-                elif event.key == pygame.K_n:
-                    area_manager.new_area()
-                    status_text = f"Started new area #{area_manager.current + 1}."
                 elif event.key == pygame.K_LEFT:
                     offset_x -= 50
                     clamp_offsets()
@@ -228,23 +225,25 @@ def main():
                     drag_start = event.pos
                     logger.info(f'Start drag at {drag_start}')
                 elif event.button == 4:  # Mouse wheel up
-                    old_scale = scale_factor
-                    scale_factor = min(2.0, scale_factor * 1.2)
-                    logger.info(f'Zoom in (wheel): scale_factor={scale_factor}')
-                    update_ui_image()
-                    mx, my = event.pos
-                    offset_x = int((offset_x + mx) * scale_factor / old_scale - mx)
-                    offset_y = int((offset_y + my - 60) * scale_factor / old_scale - (my - 60))
-                    clamp_offsets()
+                    if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        old_scale = scale_factor
+                        scale_factor = min(2.0, scale_factor * 1.2)
+                        logger.info(f'Zoom in (ctrl+wheel): scale_factor={scale_factor}')
+                        update_ui_image()
+                        mx, my = event.pos
+                        offset_x = int((offset_x + mx) * scale_factor / old_scale - mx)
+                        offset_y = int((offset_y + my - 60) * scale_factor / old_scale - (my - 60))
+                        clamp_offsets()
                 elif event.button == 5:  # Mouse wheel down
-                    old_scale = scale_factor
-                    scale_factor = max(0.1, scale_factor / 1.2)
-                    logger.info(f'Zoom out (wheel): scale_factor={scale_factor}')
-                    update_ui_image()
-                    mx, my = event.pos
-                    offset_x = int((offset_x + mx) * scale_factor / old_scale - mx)
-                    offset_y = int((offset_y + my - 60) * scale_factor / old_scale - (my - 60))
-                    clamp_offsets()
+                    if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                        old_scale = scale_factor
+                        scale_factor = max(0.1, scale_factor / 1.2)
+                        logger.info(f'Zoom out (ctrl+wheel): scale_factor={scale_factor}')
+                        update_ui_image()
+                        mx, my = event.pos
+                        offset_x = int((offset_x + mx) * scale_factor / old_scale - mx)
+                        offset_y = int((offset_y + my - 60) * scale_factor / old_scale - (my - 60))
+                        clamp_offsets()
                 else:
                     esc_count = 0
                     x, y = event.pos
@@ -254,7 +253,8 @@ def main():
                     img_x = int((x + offset_x) / scale_factor)
                     img_y = int((y_img + offset_y) / scale_factor)
                     logger.info(f'Mouse click at ({x}, {y}) [img: ({img_x}, {img_y})], button {event.button}')
-                    if event.button == 1:  # left-click: add point
+                    if event.button == 1:  # left-click: add point as new area
+                        area_manager.new_area()
                         area_manager.add_point(img_x, img_y)
                         logger.debug(f'Current area points: {area_manager.get_current()}')
                         save_mask = True
@@ -292,7 +292,7 @@ def main():
                             sx = int(px * scale_factor)
                             sy = int(py * scale_factor)
                             pygame.draw.circle(screen, (0, 255, 0), (sx, sy), 6)
-                    text_surf = font.render(info_text + " | N: new area", True, (255, 255, 255))
+                    text_surf = font.render(info_text, True, (255, 255, 255))
                     status_surf = font.render(status_text, True, (255, 255, 0))
                     screen.blit(text_surf, (10, h_ui - 50))
                     screen.blit(status_surf, (10, h_ui - 25))
@@ -358,7 +358,7 @@ def main():
                         logger.warning('No mask returned from predictor')
                         status_text = "No mask returned. Try different points."
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 2 or (event.button == 1 and pygame.key.get_mods() & pygame.KMOD_CTRL):
+                 if event.button == 2 or event.button == 1 and pygame.key.get_mods() & pygame.KMOD_CTRL:
                     dragging = False
                     logger.info('End drag')
             elif event.type == pygame.MOUSEMOTION and dragging:
@@ -421,7 +421,7 @@ def main():
 
         # Draw sticky info and status text at top
         pygame.draw.rect(screen, (30, 30, 30), (0, 0, window_w, 60))
-        text_surf = font.render(info_text + " | N: new area | Arrows/mouse/scroll: pan/zoom", True, (255, 255, 255))
+        text_surf = font.render(info_text, True, (255, 255, 255))
         status_surf = font.render(status_text, True, (255, 255, 0))
         screen.blit(text_surf, (10, 10))
         screen.blit(status_surf, (10, 35))
