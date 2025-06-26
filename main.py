@@ -690,11 +690,44 @@ def main():
     processing = False
     process_message = "Processing..."
 
-    while running:
-        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = draw_left_panel()
+    # --- Cached rects for partial redraws ---
+    left_panel_rect = pygame.Rect(0, 0, LEFT_PANEL_WIDTH, window_h)
+    image_area_rect = pygame.Rect(LEFT_PANEL_WIDTH, 0, img_area_w, img_area_h)
+    status_bar_rect = pygame.Rect(0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT)
+
+    def redraw_all():
+        draw_left_panel()
         draw_image_area()
-        draw_status_bar()
+        draw_status_bar()  # Always last
         pygame.display.flip()
+        return draw_left_panel(), None, None, None
+
+    def redraw_image_area():
+        # Only clear and redraw the image area, not the status bar
+        screen.fill((0, 0, 0), rect=image_area_rect)
+        draw_image_area()
+        draw_status_bar()  # Always draw status bar last
+        pygame.display.update([image_area_rect, status_bar_rect])
+
+    def redraw_left_panel():
+        draw_left_panel()
+        draw_status_bar()  # Always draw status bar last
+        pygame.display.update([left_panel_rect, status_bar_rect])
+
+    def redraw_status_bar():
+        draw_status_bar()
+        pygame.display.update(status_bar_rect)
+
+    while running:
+        # Only redraw everything if dragging or continuous interaction
+        needs_full_redraw = dragging
+        if needs_full_redraw:
+            show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = redraw_all()
+        else:
+            redraw_left_panel()
+            redraw_image_area()
+            redraw_status_bar()
+            show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = draw_left_panel()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 logger.info('Quit event received')
@@ -759,23 +792,37 @@ def main():
                     if 0 <= idx < len(CLICK_TYPES):
                         active_click_type = idx
                         status_text = f"Selected {CLICK_TYPES[idx]['name']} ({int(CLICK_TYPES[idx]['weight']*100)}%)"
+                        redraw_left_panel()
+                        redraw_status_bar()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
                 if show_points_rect and show_points_rect.collidepoint(mx, my):
                     show_points = not show_points
                     status_text = f"Show Points: {'ON' if show_points else 'OFF'}"
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
                     continue
                 if show_masks_rect and show_masks_rect.collidepoint(mx, my):
                     show_masks = not show_masks
                     status_text = f"Show Masks: {'ON' if show_masks else 'OFF'}"
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
                     continue
                 if horizon_toggle_rect and horizon_toggle_rect.collidepoint(mx, my):
                     show_horizon = not show_horizon
                     status_text = f"Show Horizon: {'ON' if show_horizon else 'OFF'}"
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
                     continue
                 if spherical_toggle_rect and spherical_toggle_rect.collidepoint(mx, my):
                     show_spherical_view = not show_spherical_view
                     status_text = f"Spherical View: {'ON' if show_spherical_view else 'OFF'}"
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
                     continue
                 # Check if click is in click type selector (row layout, left panel, centered)
                 dot_radius = 14
@@ -926,15 +973,15 @@ def main():
                 processing = False
                 status_text = prev_status_text
                 # --- UI update after mask prediction ---
-                # Only clear and redraw the area below the status bar
-                screen.fill((0, 0, 0), rect=pygame.Rect(0, STATUS_BAR_HEIGHT, window_w, window_h - STATUS_BAR_HEIGHT))
+                # Only clear and redraw the image area, not the status bar
+                screen.fill((0, 0, 0), rect=image_area_rect)
                 draw_image_area()
-                draw_status_bar()
-                pygame.display.flip()
+                draw_status_bar()  # Always last
+                pygame.display.update([image_area_rect, status_bar_rect])
                 pygame.event.pump()
                 # --- End UI update ---
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 2:  # Only middle mouse for dragging
+                if event.button == 2:
                     dragging = False
                     logger.info('End drag')
             elif event.type == pygame.MOUSEMOTION:
@@ -967,11 +1014,7 @@ def main():
                     offset_x -= dx
                     offset_y -= dy
                     clamp_offsets()
-        # --- Always redraw the UI every frame for smooth dragging ---
-        draw_left_panel()
-        draw_image_area()
-        draw_status_bar()
-        pygame.display.flip()
+                    redraw_image_area()
         clock.tick(30)
 
     logger.info('Exiting SAM Segmenter')
