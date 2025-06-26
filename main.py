@@ -63,19 +63,8 @@ def main():
     logger = init_logging('svf', console_level=logging.DEBUG, file_level=logging.DEBUG)
     logger.info('Starting SAM Segmenter')
     pygame.init()
-
-    # Temporary loading window
-    temp_screen = pygame.display.set_mode((600, 200))
-    pygame.display.set_caption("SAM Segmenter - Loading...")
     pygame.font.init()
     temp_font = pygame.font.SysFont(None, 48)
-    temp_screen.fill((30, 30, 30))
-    loading_text = temp_font.render("Loading image and model...", True, (255, 255, 255))
-    temp_screen.blit(loading_text, (50, 80))
-    pygame.display.flip()
-    for _ in range(10):
-        pygame.event.pump()
-        pygame.time.wait(10)
 
     # Prepare cache dir
     if not os.path.exists(CACHE_DIR):
@@ -100,41 +89,46 @@ def main():
     w = int(w_img)
     logger.debug(f"Set h={h}, w={w} (image dimensions)")
 
-    # --- Model loading with timing and UI counter ---
+    # Now update window size based on image and create main window
+    window_w = int(LEFT_PANEL_WIDTH + min(int(w * 1.0), 1600))
+    window_h = int(min(int(h * 1.0), 900) + STATUS_BAR_HEIGHT)
+    img_area_w = int(window_w - LEFT_PANEL_WIDTH)
+    img_area_h = int(window_h - STATUS_BAR_HEIGHT)
+    screen = pygame.display.set_mode((window_w, window_h))
+    pygame.display.set_caption(f"SAM Segmenter - {image_file}")
+    # Draw loading message in main window (now correct size)
+    screen.fill((30, 30, 30))
+    loading_text = temp_font.render("Loading model...", True, (255, 255, 255))
+    screen.blit(loading_text, (LEFT_PANEL_WIDTH + img_area_w // 2 - 180, img_area_h // 2 - 24))
+    pygame.display.flip()
+    for _ in range(10):
+        pygame.event.pump()
+        pygame.time.wait(10)
+
+    # --- Model loading in background thread ---
     import time
     from threading import Thread
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model_text = f"Loading model to {'GPU' if device == 'cuda' else 'CPU'}..."
-    temp_screen.fill((30, 30, 30))
-    loading_text = temp_font.render(model_text, True, (255, 255, 255))
-    temp_screen.blit(loading_text, (50, 80))
-    pygame.display.flip()
-    pygame.event.pump()
-
-    start_time = time.time()
+    model_loading_status = {'status': 'Loading model...', 'done': False, 'success': False, 'error': None, 'start_time': time.time(), 'total_time': None}
     model_loaded = [None]
-    def load_model():
-        sam_local = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
-        sam_local.to(device)
-        predictor_local = SamPredictor(sam_local)
-        model_loaded[0] = (sam_local, predictor_local)
-    t = Thread(target=load_model)
+    def load_model_bg():
+        try:
+            model_loading_status['status'] = f"Loading model to {'GPU' if device == 'cuda' else 'CPU'}..."
+            sam_local = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_WEIGHTS_PATH)
+            sam_local.to(device)
+            predictor_local = SamPredictor(sam_local)
+            model_loaded[0] = (sam_local, predictor_local)
+            model_loading_status['done'] = True
+            model_loading_status['success'] = True
+            model_loading_status['total_time'] = time.time() - model_loading_status['start_time']
+            model_loading_status['status'] = f"Model loaded to {device} in {model_loading_status['total_time']:.1f}s"
+        except Exception as e:
+            model_loading_status['done'] = True
+            model_loading_status['success'] = False
+            model_loading_status['error'] = str(e)
+            model_loading_status['status'] = f"Model load failed: {e}"
+    t = Thread(target=load_model_bg)
     t.start()
-    approx_time = 10  # Approximate expected load time in seconds
-    while model_loaded[0] is None:
-        elapsed = int(time.time() - start_time)
-        temp_screen.fill((30, 30, 30))
-        loading_text = temp_font.render(model_text, True, (255, 255, 255))
-        temp_screen.blit(loading_text, (50, 70))
-        counter_text = temp_font.render(f"{elapsed} sec / ~{approx_time} sec", True, (180, 180, 180))
-        temp_screen.blit(counter_text, (50, 130))
-        pygame.display.flip()
-        pygame.event.pump()
-        pygame.time.wait(200)
-    sam, predictor = model_loaded[0]
-    total_time = time.time() - start_time
-    logger.info(f"Model loaded to {device} in {total_time:.1f} seconds.")
-    predictor.set_image(img)
 
     # Set up window for half-size image, but now with left panel and status bar
     # Window size: left panel + image area, status bar at bottom
@@ -524,7 +518,13 @@ def main():
     def draw_status_bar():
         # Draw status bar at the bottom (flat grey, less height, text left)
         pygame.draw.rect(screen, STATUS_BG, (0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT))
-        status_surf = status_font.render(status_text, MODERN_FONT_ANTIALIAS, STATUS_TEXT)
+        # Show model loading status if not done
+        if not model_loading_status['done']:
+            status_surf = status_font.render(model_loading_status['status'], MODERN_FONT_ANTIALIAS, (255, 220, 80))
+        elif model_loading_status['done'] and not model_loading_status['success']:
+            status_surf = status_font.render(model_loading_status['status'], MODERN_FONT_ANTIALIAS, (255, 80, 80))
+        else:
+            status_surf = status_font.render(status_text, MODERN_FONT_ANTIALIAS, STATUS_TEXT)
         # Align status text with left panel margin
         screen.blit(status_surf, (32, window_h - STATUS_BAR_HEIGHT + 6))
         # Draw mouse hover x/y in bottom right
@@ -695,6 +695,12 @@ def main():
     image_area_rect = pygame.Rect(LEFT_PANEL_WIDTH, 0, img_area_w, img_area_h)
     status_bar_rect = pygame.Rect(0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT)
 
+    # --- Initialize toggle rects to None for safe event handling ---
+    show_points_rect = None
+    show_masks_rect = None
+    horizon_toggle_rect = None
+    spherical_toggle_rect = None
+
     def redraw_all():
         draw_left_panel()
         draw_image_area()
@@ -718,16 +724,40 @@ def main():
         draw_status_bar()
         pygame.display.update(status_bar_rect)
 
+    # --- Main event loop ---
     while running:
-        # Only redraw everything if dragging or continuous interaction
-        needs_full_redraw = dragging
-        if needs_full_redraw:
-            show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = redraw_all()
-        else:
-            redraw_left_panel()
-            redraw_image_area()
-            redraw_status_bar()
-            show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = draw_left_panel()
+        # Only allow interaction after model is loaded
+        if not model_loading_status['done']:
+            draw_left_panel()
+            draw_image_area()
+            draw_status_bar()
+            pygame.display.flip()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    logger.info('Quit event received')
+                    running = False
+            clock.tick(30)
+            continue
+        if model_loading_status['done'] and not model_loading_status['success']:
+            draw_left_panel()
+            draw_image_area()
+            draw_status_bar()
+            pygame.display.flip()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+            continue
+        # On first successful load, set up predictor and image
+        if model_loaded[0] is not None and 'predictor' not in locals():
+            sam, predictor = model_loaded[0]
+            predictor.set_image(img)
+            logger.info(model_loading_status['status'])
+        # --- Always update toggle rects at start of event loop ---
+        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = draw_left_panel()
+        draw_image_area()
+        draw_status_bar()
+        pygame.display.flip()
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 logger.info('Quit event received')
@@ -954,6 +984,19 @@ def main():
                 if crop_n > 0 and crop_n * 2 < h_int:
                     combined_mask[:crop_n, :] = 0.0
                     combined_mask[-crop_n:, :] = 0.0
+                mask = combined_mask if np.any(combined_mask > 0) else None
+                # Save quantized mask as PNG (4 levels: 0,1,2,3,4)
+                if mask is not None:
+                    # Quantize: 0=bg, 1=yellow, 2=orange, 3=red, 4=purple
+                    bins = [0.13, 0.38, 0.63, 0.88, 1.01]  # right edges
+                    quantized = np.digitize(mask, bins)  # 0-4
+                    logger.debug(f"Quantized mask unique values: {np.unique(quantized)}")
+                    # Save 5-level mask (0, 64, 128, 192, 255) as 'mask_YYYYMMDD_HHMMSS.png'
+                    quantized_5level = (quantized * 64).clip(0, 255).astype(np.uint8)
+                    out_path_mask = os.path.join(RESULTS_DIR, f"mask_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S').replace('-', '')}.png")
+                    img_out_mask = Image.fromarray(quantized_5level, mode='L')
+                    img_out_mask.save(out_path_mask)
+                    logger.info(f"Saved mask PNG to {out_path_mask}")
                 mask = combined_mask if np.any(combined_mask > 0) else None
                 # Save quantized mask as PNG (4 levels: 0,1,2,3,4)
                 if mask is not None:
