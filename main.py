@@ -17,6 +17,7 @@ SAM_MODEL_TYPE = "vit_h"  # model type: vit_h, vit_l, vit_b
 SAM_WEIGHTS_PATH = "sam_vit_h_4b8939.pth"  # SAM weights file
 RESULTS_DIR = "results"
 CACHE_DIR = "cache"
+SVF_DIR = "svf"  # Add this line for SVF output directory
 
 # UI Layout constants (single source of truth)
 LEFT_PANEL_WIDTH = 420  # wider UI
@@ -69,6 +70,9 @@ def main():
     # Prepare cache dir
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
+    # Prepare SVF dir
+    if not os.path.exists(SVF_DIR):
+        os.makedirs(SVF_DIR)
 
     # Get first image in directory, prefer test.jpg if present
     files = [f for f in os.listdir(IMAGE_DIR) if os.path.isfile(os.path.join(IMAGE_DIR, f))]
@@ -79,12 +83,11 @@ def main():
     # Prefer 'test.jpg' (case-insensitive), else first file
     preferred = next((f for f in files if f.lower() == "test.jpg"), None)
     image_file = preferred if preferred else files[0]
+    image_idx = files.index(image_file)
     image_path = os.path.join(IMAGE_DIR, image_file)
-    logger.info(f"Loading image: {image_path}")
     img_pil = Image.open(image_path).convert("RGB")
     img = np.array(img_pil)
     h_img, w_img, _ = img.shape
-    logger.debug(f"Loaded image shape: h_img={h_img}, w_img={w_img}")
     h = int(h_img)
     w = int(w_img)
     logger.debug(f"Set h={h}, w={w} (image dimensions)")
@@ -129,6 +132,19 @@ def main():
             model_loading_status['status'] = f"Model load failed: {e}"
     t = Thread(target=load_model_bg)
     t.start()
+
+    # --- Window and area sizes (remove nav bar height) ---
+    window_w = int(LEFT_PANEL_WIDTH + min(int(w * 1.0), 1600))
+    window_h = int(min(int(h * 1.0), 900) + STATUS_BAR_HEIGHT)
+    img_area_w = int(window_w - LEFT_PANEL_WIDTH)
+    img_area_h = int(window_h - STATUS_BAR_HEIGHT)
+    screen = pygame.display.set_mode((window_w, window_h))
+    pygame.display.set_caption(f"SAM Segmenter - {image_file}")
+
+    # Cached rects for partial redraws (remove nav bar)
+    left_panel_rect = pygame.Rect(0, 0, LEFT_PANEL_WIDTH, window_h)
+    image_area_rect = pygame.Rect(LEFT_PANEL_WIDTH, 0, img_area_w, img_area_h)
+    status_bar_rect = pygame.Rect(0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT)
 
     # Set up window for half-size image, but now with left panel and status bar
     # Window size: left panel + image area, status bar at bottom
@@ -507,13 +523,36 @@ def main():
         info_y = spherical_toggle_y + spherical_toggle_h + 18
         info_surf = info_font.render(info_str, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
         screen.blit(info_surf, (heading_margin, info_y))
+        # --- Save/Prev/Next buttons ---
+        nav_font = pygame.font.Font(MODERN_FONT_NAME, 20)
+        nav_btn_w = LEFT_PANEL_WIDTH - 2 * heading_margin
+        nav_btn_h = 32
+        nav_btn_y = info_y + 36
+        nav_btn_gap = 12
+
+        # Save SVF button
+        save_btn_rect = pygame.Rect(heading_margin, nav_btn_y, nav_btn_w, nav_btn_h)
+        pygame.draw.rect(screen, (60, 60, 80), save_btn_rect, border_radius=8)
+        save_label = nav_font.render("Save image SVF [Enter]", True, (255,255,255))
+        screen.blit(save_label, (save_btn_rect.x + 12, save_btn_rect.y + 5))
+
+        # Prev/Next buttons
+        prev_btn_rect = pygame.Rect(heading_margin, nav_btn_y + nav_btn_h + nav_btn_gap, (nav_btn_w-8)//2, nav_btn_h)
+        next_btn_rect = pygame.Rect(prev_btn_rect.right + 8, prev_btn_rect.y, (nav_btn_w-8)//2, nav_btn_h)
+        pygame.draw.rect(screen, (60, 60, 80), prev_btn_rect, border_radius=8)
+        pygame.draw.rect(screen, (60, 60, 80), next_btn_rect, border_radius=8)
+        prev_label = nav_font.render("Prev [B]", True, (255,255,255))
+        next_label = nav_font.render("Next [N]", True, (255,255,255))
+        screen.blit(prev_label, (prev_btn_rect.x + 12, prev_btn_rect.y + 5))
+        screen.blit(next_label, (next_btn_rect.x + 12, next_btn_rect.y + 5))
+
         # Move instructions to bottom, subtle
         y = window_h - 28 * len(left_panel_texts) - 24
         for text in left_panel_texts:
             text_surf = panel_font_subtle.render(text, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
             screen.blit(text_surf, (heading_margin, y))
             y += 22
-        return show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect
+        return show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect
 
     def draw_status_bar():
         # Draw status bar at the bottom (flat grey, less height, text left)
@@ -622,7 +661,6 @@ def main():
                 for x in range(0, img_area_w, checker_size):
                     color = (180, 180, 180) if (x // checker_size + y // checker_size) % 2 == 0 else (100, 100, 100)
                     pygame.draw.rect(screen, color, (LEFT_PANEL_WIDTH + x, y, checker_size, checker_size))
-            # Draw base image (UI, scrolled) as the lowest layer
             img_rect = pygame.Rect(offset_x, offset_y, img_area_w, img_area_h)
             surf = pygame.surfarray.make_surface(img_ui.swapaxes(0, 1))
             screen.blit(surf, (LEFT_PANEL_WIDTH, 0), img_rect)
@@ -668,20 +706,16 @@ def main():
                             pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
         # --- SVF Math Visualization ---
         if show_math_viz or show_horizon:
-            # Draw horizon (green)
             if show_spherical_view:
-                # Draw green circle for horizon in spherical view
                 out_size = min(img_area_w, img_area_h)
                 cx = LEFT_PANEL_WIDTH + out_size // 2
                 cy = out_size // 2
                 radius = out_size // 2
                 pygame.gfxdraw.aacircle(screen, cx, cy, radius, (0, 255, 0))
             else:
-                # Draw green line for horizon in equirectangular view
                 horizon_y = int(h_ui // 2) - offset_y
                 if 0 <= horizon_y < img_area_h:
                     pygame.draw.line(screen, (0, 255, 0), (LEFT_PANEL_WIDTH, horizon_y), (LEFT_PANEL_WIDTH + img_area_w, horizon_y), 3)
-        # ...existing code for math viz overlays (if show_math_viz)...
 
     esc_count = 0
     save_mask = False
@@ -690,39 +724,112 @@ def main():
     processing = False
     process_message = "Processing..."
 
-    # --- Cached rects for partial redraws ---
-    left_panel_rect = pygame.Rect(0, 0, LEFT_PANEL_WIDTH, window_h)
-    image_area_rect = pygame.Rect(LEFT_PANEL_WIDTH, 0, img_area_w, img_area_h)
-    status_bar_rect = pygame.Rect(0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT)
-
-    # --- Initialize toggle rects to None for safe event handling ---
+    # --- Ensure all button rects are initialized before use ---
+    save_btn_rect = pygame.Rect(0, 0, 0, 0)
+    prev_btn_rect = pygame.Rect(0, 0, 0, 0)
+    next_btn_rect = pygame.Rect(0, 0, 0, 0)
     show_points_rect = None
     show_masks_rect = None
     horizon_toggle_rect = None
     spherical_toggle_rect = None
 
     def redraw_all():
-        draw_left_panel()
+        # draw_nav_bar()  # REMOVE this line
+        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect = draw_left_panel()
         draw_image_area()
-        draw_status_bar()  # Always last
+        draw_status_bar()
         pygame.display.flip()
-        return draw_left_panel(), None, None, None
+        return show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect
 
     def redraw_image_area():
-        # Only clear and redraw the image area, not the status bar
         screen.fill((0, 0, 0), rect=image_area_rect)
         draw_image_area()
-        draw_status_bar()  # Always draw status bar last
+        draw_status_bar()
         pygame.display.update([image_area_rect, status_bar_rect])
 
     def redraw_left_panel():
         draw_left_panel()
-        draw_status_bar()  # Always draw status bar last
+        draw_status_bar()
         pygame.display.update([left_panel_rect, status_bar_rect])
 
     def redraw_status_bar():
         draw_status_bar()
         pygame.display.update(status_bar_rect)
+
+    # --- Image navigation state ---
+    image_idx = files.index(image_file)
+    def reload_files():
+        nonlocal files
+        files = [f for f in os.listdir(IMAGE_DIR) if os.path.isfile(os.path.join(IMAGE_DIR, f))]
+        files.sort()
+    def load_image_by_idx(idx):
+        nonlocal img_pil, img, h_img, w_img, h, w, img_ui, w_ui, h_ui, scale_factor, base_scale, image_file, image_path, svf_value, mask, masked_surf, mouse_img_x, mouse_img_y, image_idx, predictor
+        reload_files()
+        idx = idx % len(files)
+        image_file = files[idx]
+        image_idx = idx
+        image_path = os.path.join(IMAGE_DIR, image_file)
+        img_pil = Image.open(image_path).convert("RGB")
+        img = np.array(img_pil)
+        h_img, w_img, _ = img.shape
+        h = int(h_img)
+        w = int(w_img)
+        base_scale = float(max(img_area_w / w, img_area_h / h, 0.2))
+        scale_factor = base_scale
+        w_ui, h_ui = int(w * scale_factor), int(h * scale_factor)
+        img_ui = np.array(Image.fromarray(img).resize((w_ui, h_ui), Image.LANCZOS))
+        svf_value = None
+        mask = None
+        masked_surf = None
+        mouse_img_x = None
+        mouse_img_y = None
+        pygame.display.set_caption(f"SAM Segmenter - {image_file}")
+        # Ensure predictor is updated with new image
+        if model_loaded[0] is not None:
+            sam, predictor_local = model_loaded[0]
+            predictor = predictor_local
+            predictor.set_image(img)
+
+    def save_image_svf():
+        if svf_value is None:
+            logger.warning("SVF value not computed, not saving image.")
+            return
+        base, ext = os.path.splitext(image_file)
+        import re
+        if re.search(r"SVF\d+\.\d{3}", base):
+            new_base = base
+        else:
+            new_base = f"{base}_SVF{svf_value*100:.3f}"
+        out_name = f"{new_base}{ext}"
+        out_path = os.path.join(SVF_DIR, out_name)
+        img_pil.save(out_path)
+        logger.info(f"Saved image with SVF to {out_path}")
+        # Update file list so user can go back to this file
+        reload_files()
+        nonlocal status_text
+        status_text = f"Saved: {out_name}"
+
+    def next_image():
+        nonlocal image_idx
+        image_idx = (image_idx + 1) % len(files)
+        load_image_by_idx(image_idx)
+        area_manager.clear()
+        masks.clear()
+        nonlocal mask, svf_value, status_text
+        mask = None
+        svf_value = None
+        status_text = f"Loaded {image_file}. Add points to segment."
+
+    def prev_image():
+        nonlocal image_idx
+        image_idx = (image_idx - 1) % len(files)
+        load_image_by_idx(image_idx)
+        area_manager.clear()
+        masks.clear()
+        nonlocal mask, svf_value, status_text
+        mask = None
+        svf_value = None
+        status_text = f"Loaded {image_file}. Add points to segment."
 
     # --- Main event loop ---
     while running:
@@ -753,7 +860,7 @@ def main():
             predictor.set_image(img)
             logger.info(model_loading_status['status'])
         # --- Always update toggle rects at start of event loop ---
-        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect = draw_left_panel()
+        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect = draw_left_panel()
         draw_image_area()
         draw_status_bar()
         pygame.display.flip()
@@ -824,8 +931,41 @@ def main():
                         status_text = f"Selected {CLICK_TYPES[idx]['name']} ({int(CLICK_TYPES[idx]['weight']*100)}%)"
                         redraw_left_panel()
                         redraw_status_bar()
+                elif event.key == pygame.K_RETURN:
+                    save_image_svf()
+                    redraw_left_panel()
+                    redraw_status_bar()
+                elif event.key == pygame.K_n:
+                    next_image()
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
+                elif event.key == pygame.K_b:
+                    prev_image()
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
+                # --- Left panel navigation buttons ---
+                if save_btn_rect.collidepoint(mx, my):
+                    save_image_svf()
+                    redraw_left_panel()
+                    redraw_status_bar()
+                    continue
+                if prev_btn_rect.collidepoint(mx, my):
+                    prev_image()
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
+                    continue
+                if next_btn_rect.collidepoint(mx, my):
+                    next_image()
+                    redraw_left_panel()
+                    redraw_image_area()
+                    redraw_status_bar()
+                    continue
+                # --- Left panel toggles ---
                 if show_points_rect and show_points_rect.collidepoint(mx, my):
                     show_points = not show_points
                     status_text = f"Show Points: {'ON' if show_points else 'OFF'}"
