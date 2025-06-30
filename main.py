@@ -794,20 +794,64 @@ def main():
         if svf_value is None:
             logger.warning("SVF value not computed, not saving image.")
             return
+        # Show "Saving..." message in gold/yellow
+        nonlocal status_text
+        status_text = "Saving..."
+        draw_status_bar()
+        pygame.display.update(status_bar_rect)
+        pygame.event.pump()
         base, ext = os.path.splitext(image_file)
         import re
-        if re.search(r"SVF\d+\.\d{3}", base):
-            new_base = base
-        else:
-            new_base = f"{base}_SVF{svf_value*100:.3f}"
-        out_name = f"{new_base}{ext}"
-        out_path = os.path.join(SVF_DIR, out_name)
-        img_pil.save(out_path)
-        logger.info(f"Saved image with SVF to {out_path}")
+        # Always use PNG for export
+        eq_name = f"{base}_SVF{svf_value*100:.3f}_EQ.png"
+        hs_name = f"{base}_SVF{svf_value*100:.3f}_HS.png"
+        eq_mask_name = f"{base}_SVF{svf_value*100:.3f}_EQ_mask.png"
+        hs_mask_name = f"{base}_SVF{svf_value*100:.3f}_HS_mask.png"
+        eq_path = os.path.join(SVF_DIR, eq_name)
+        hs_path = os.path.join(SVF_DIR, hs_name)
+        eq_mask_path = os.path.join(SVF_DIR, eq_mask_name)
+        hs_mask_path = os.path.join(SVF_DIR, hs_mask_name)
+        # Save equirectangular (original) image as PNG
+        img_pil.save(eq_path)
+        logger.info(f"Saved equirectangular SVF image to {eq_path}")
+        # Save equirectangular mask as PNG (quantized)
+        if mask is not None:
+            bins = [0.13, 0.38, 0.63, 0.88, 1.01]
+            quantized = np.digitize(mask, bins)
+            quantized_5level = (quantized * 64).clip(0, 255).astype(np.uint8)
+            Image.fromarray(quantized_5level, mode='L').save(eq_mask_path)
+            logger.info(f"Saved equirectangular mask to {eq_mask_path}")
+        # Save hemispherical (projected) image as PNG
+        out_size = min(img.shape[1], img.shape[0])  # Use min(w, h) for 1:1
+        crop_n = int(letterbox_crop)
+        img_cropped = img[crop_n:img.shape[0]-crop_n, :, :] if crop_n > 0 else img
+        fisheye_img = project_equi_to_fisheye(img_cropped, out_size)
+        Image.fromarray(fisheye_img).save(hs_path)
+        logger.info(f"Saved hemispherical SVF image to {hs_path}")
+        # Save hemispherical mask as PNG (quantized)
+        if mask is not None:
+            mask_cropped = mask[crop_n:mask.shape[0]-crop_n, :] if crop_n > 0 else mask
+            fisheye_mask = project_mask_equi_to_fisheye(mask_cropped, out_size)
+            bins = [0.13, 0.38, 0.63, 0.88, 1.01]
+            quantized_hs = np.digitize(fisheye_mask, bins)
+            quantized_hs_5level = (quantized_hs * 64).clip(0, 255).astype(np.uint8)
+            Image.fromarray(quantized_hs_5level, mode='L').save(hs_mask_path)
+            logger.info(f"Saved hemispherical mask to {hs_mask_path}")
         # Update file list so user can go back to this file
         reload_files()
-        nonlocal status_text
-        status_text = f"Saved: {out_name}"
+        # Show "Saved images." message in green
+        status_text = "Saved images."
+        draw_status_bar()
+        # Draw green status bar for saved message
+        status_bar_surface = pygame.Surface((status_bar_rect.width, status_bar_rect.height))
+        status_bar_surface.fill((40, 120, 40))  # green
+        screen.blit(status_bar_surface, (status_bar_rect.x, status_bar_rect.y))
+        status_font = pygame.font.Font(MODERN_FONT_NAME, 20)
+        status_surf = status_font.render(status_text, MODERN_FONT_ANTIALIAS, (255, 255, 255))
+        screen.blit(status_surf, (32, status_bar_rect.y + 6))
+        pygame.display.update(status_bar_rect)
+        pygame.event.pump()
+        # ...existing code...
 
     def next_image():
         nonlocal image_idx
