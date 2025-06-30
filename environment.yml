@@ -10,6 +10,7 @@ dependencies:
   - pytorch
   - torchvision
   - pip
+  - scipy
   - pip:
       - git+https://github.com/facebookresearch/segment-anything.git
       - opencv-python
