@@ -221,32 +221,34 @@ def main():
     ]
     active_click_type = 0  # Index into CLICK_TYPES
 
-    class PointAreasManager:
+    # --- Refactored: Each point is its own mask prompt ---
+    class PointManager:
         def __init__(self):
-            self.areas = [[]]  # List of lists of (x, y, type_idx)
-            self.current = 0
+            self.points = []  # List of (x, y, type_idx)
         def add_point(self, x, y, type_idx):
-            self.areas[self.current].append((x, y, type_idx))
-        def remove_last(self):
-            if self.areas[self.current]:
-                self.areas[self.current].pop()
-        def new_area(self):
-            self.areas.append([])
-            self.current = len(self.areas) - 1
+            self.points.append((x, y, type_idx))
+        def remove_nearest(self, sx, sy, scale_factor, offset_x, offset_y):
+            if not self.points:
+                return
+            min_dist = float('inf')
+            min_idx = None
+            for idx, (px, py, type_idx) in enumerate(self.points):
+                ux = int(px * scale_factor) - offset_x
+                uy = int(py * scale_factor) - offset_y
+                dist = (ux - sx) ** 2 + (uy - sy) ** 2
+                if dist < min_dist:
+                    min_dist = dist
+                    min_idx = idx
+            if min_dist < (12 ** 2) and min_idx is not None:
+                del self.points[min_idx]
         def clear(self):
-            self.areas = [[]]
-            self.current = 0
+            self.points = []
         def get_all(self):
-            return self.areas
-        def get_current(self):
-            return self.areas[self.current]
-        def set_current(self, idx):
-            if 0 <= idx < len(self.areas):
-                self.current = idx
+            return self.points
         def __len__(self):
-            return sum(len(a) for a in self.areas)
+            return len(self.points)
 
-    area_manager = PointAreasManager()
+    point_manager = PointManager()
     masks = []
     esc_count = 0
     mask = None
@@ -327,7 +329,7 @@ def main():
 
         return svf_num / svf_den if svf_den > 0 else 0.0
 
-    svf_value = None  # Store last SVF value
+    svf_value = 0  # Store last SVF value, initialized to 0
     show_math_viz = False  # Toggle for SVF math visualization
     show_horizon = False  # Toggle for always showing the horizon
     show_spherical_view = False  # Toggle for spherical (fisheye) projection
@@ -440,25 +442,25 @@ def main():
             percent_surf = percent_font.render(percent_label, MODERN_FONT_ANTIALIAS, (255,255,255))
             percent_rect = percent_surf.get_rect(center=(cx, cy + dot_radius + 14))
             screen.blit(percent_surf, percent_rect)
-        # --- SVF (%) label to the right of the dots, vertically centered, larger and bolder ---
+        # --- SVF (%) label and value below the buttons, left-aligned with padding ---
         svf_label_font = pygame.font.Font(MODERN_FONT_NAME, 24)
         svf_label = svf_label_font.render("SVF (%)", True, (220, 220, 230))
-        right_padding = 32
-        svf_label_x = LEFT_PANEL_WIDTH - right_padding - svf_label.get_width() // 2
-        label_rect = svf_label.get_rect(center=(svf_label_x, selector_y))
-        screen.blit(svf_label, label_rect)
-        # --- SVF value below label ---
+        svf_label_x = heading_margin + 10  # left padding
+        svf_label_y = selector_y + dot_radius + 38  # below dots and percentages
+        screen.blit(svf_label, (svf_label_x, svf_label_y))
+        # --- SVF value below label, blue, bold, much bigger ---
         if svf_value is not None:
-            svf_val_font = pygame.font.Font(MODERN_FONT_NAME, 28)
+            svf_val_font = pygame.font.Font(MODERN_FONT_NAME, 48)
+            svf_val_font.set_bold(True)
             svf_val_str = f"{svf_value*100:.3f}"
             svf_val_surf = svf_val_font.render(svf_val_str, True, (80, 200, 255))
-            svf_val_x = LEFT_PANEL_WIDTH - right_padding - svf_val_surf.get_width() // 2
-            row_bottom = selector_y + dot_radius + 32
-            center_y = (selector_y + row_bottom) // 2
-            val_rect = svf_val_surf.get_rect(center=(svf_val_x, center_y))
-            screen.blit(svf_val_surf, val_rect)
+            svf_val_x = svf_label_x
+            svf_val_y = svf_label_y + svf_label.get_height() + 4
+            screen.blit(svf_val_surf, (svf_val_x, svf_val_y))
+            row_bottom = svf_val_y + svf_val_surf.get_height() + 16
+        else:
+            row_bottom = svf_label_y + svf_label.get_height() + 16
         # Divider below SVF value
-        row_bottom = selector_y + dot_radius + 32
         pygame.draw.line(screen, PANEL_DIVIDER, (heading_margin, row_bottom), (LEFT_PANEL_WIDTH - heading_margin, row_bottom), 2)
         # --- Show Points toggle ---
         toggle_font = pygame.font.Font(MODERN_FONT_NAME, 20)
@@ -642,17 +644,16 @@ def main():
             # Draw points (use full out_size for mapping, not render_size)
             if show_points:
                 point_radius = 7
-                for area in area_manager.get_all():
-                    for px, py, type_idx in area:
-                        crop_n = int(letterbox_crop)
-                        py_cropped = py - crop_n
-                        h_cropped = h - 2 * crop_n
-                        if 0 <= py_cropped < h_cropped:
-                            res = project_point_equi_to_fisheye(px, py_cropped, w, h_cropped, out_size // 2)
-                            if res is not None:
-                                sx, sy = res
-                                pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
-                                pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
+                for px, py, type_idx in point_manager.get_all():
+                    crop_n = int(letterbox_crop)
+                    py_cropped = py - crop_n
+                    h_cropped = h - 2 * crop_n
+                    if 0 <= py_cropped < h_cropped:
+                        res = project_point_equi_to_fisheye(px, py_cropped, w, h_cropped, out_size // 2)
+                        if res is not None:
+                            sx, sy = res
+                            pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
+                            pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
         else:
             # Equirectangular view
             # Draw checkerboard background for transparency debug (in image area)
@@ -697,13 +698,12 @@ def main():
             # Draw points with color by type
             if show_points:
                 point_radius = 7
-                for area in area_manager.get_all():
-                    for px, py, type_idx in area:
-                        sx = int(px * scale_factor) - offset_x
-                        sy = int(py * scale_factor) - offset_y
-                        if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
-                            pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
-                            pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
+                for px, py, type_idx in point_manager.get_all():
+                    sx = int(px * scale_factor) - offset_x
+                    sy = int(py * scale_factor) - offset_y
+                    if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
+                        pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
+                        pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
         # --- SVF Math Visualization ---
         if show_math_viz or show_horizon:
             if show_spherical_view:
@@ -778,7 +778,7 @@ def main():
         scale_factor = base_scale
         w_ui, h_ui = int(w * scale_factor), int(h * scale_factor)
         img_ui = np.array(Image.fromarray(img).resize((w_ui, h_ui), Image.LANCZOS))
-        svf_value = None
+        svf_value = 0  # Initialize SVF value to 0 when loading a new image
         mask = None
         masked_surf = None
         mouse_img_x = None
@@ -813,7 +813,7 @@ def main():
         nonlocal image_idx
         image_idx = (image_idx + 1) % len(files)
         load_image_by_idx(image_idx)
-        area_manager.clear()
+        point_manager.clear()
         masks.clear()
         nonlocal mask, svf_value, status_text
         mask = None
@@ -824,7 +824,7 @@ def main():
         nonlocal image_idx
         image_idx = (image_idx - 1) % len(files)
         load_image_by_idx(image_idx)
-        area_manager.clear()
+        point_manager.clear()
         masks.clear()
         nonlocal mask, svf_value, status_text
         mask = None
@@ -880,12 +880,13 @@ def main():
                         logger.info('ESC pressed 3 times, exiting')
                         running = False
                 elif event.key == pygame.K_r:
-                    logger.info('Resetting all areas and masks')
-                    area_manager.clear()
+                    logger.info('Resetting all points and masks')
+                    point_manager.clear()
                     masks.clear()
                     esc_count = 0
                     status_text = "Reset. Add points to segment."
                     mask = None  # Clear the mask overlay as well
+                    svf_value = 0  # Reset SVF value to 0
                 elif event.key == pygame.K_LEFT:
                     offset_x -= 50
                     clamp_offsets()
@@ -1031,33 +1032,63 @@ def main():
                         img_y = int((y + offset_y) / scale_factor)
                     if img_x is None or img_y is None:
                         continue
-                    if event.button == 1:  # left-click: add point as new area
-                        area_manager.new_area()
-                        area_manager.add_point(img_x, img_y, active_click_type)
-                        logger.debug(f'Current area points: {area_manager.get_current()}')
+                    if event.button == 1:  # left-click: add point
+                        point_manager.add_point(img_x, img_y, active_click_type)
+                        logger.debug(f'Added point: {(img_x, img_y)}')
                         save_mask = True
-                        logger.debug(f'Added point: {(img_x, img_y)} to area {area_manager.current}')
-                        status_text = f"Added point at ({img_x}, {img_y}) to area {area_manager.current + 1} ({CLICK_TYPES[active_click_type]['name']})"
-                    elif event.button == 3:  # right-click: remove nearest point from any area
-                        min_dist = float('inf')
-                        min_idx = None
-                        min_area = None
-                        click_sx = x
-                        click_sy = y
-                        for area_idx, area in enumerate(area_manager.get_all()):
-                            for pt_idx, (px, py, type_idx) in enumerate(area):
-                                sx = int(px * scale_factor) - offset_x
-                                sy = int(py * scale_factor) - offset_y
-                                dist = (sx - click_sx) ** 2 + (sy - click_sy) ** 2
-                                if dist < min_dist:
-                                    min_dist = dist
-                                    min_idx = pt_idx
-                                    min_area = area_idx
-                        if min_dist < (12 ** 2) and min_area is not None and min_idx is not None:
-                            removed = area_manager.areas[min_area][min_idx]
-                            del area_manager.areas[min_area][min_idx]
-                            logger.debug(f'Removed point: {removed} from area {min_area}')
-                            status_text = f"Removed point from area {min_area + 1}."
+                        status_text = f"Added point at ({img_x}, {img_y}) ({CLICK_TYPES[active_click_type]['name']})"
+                    elif event.button == 3:  # right-click: remove nearest point
+                        point_manager.remove_nearest(x, y, scale_factor, offset_x, offset_y)
+                        status_text = f"Removed nearest point."
+                        # --- Update SVF after point removal ---
+                        all_points = point_manager.get_all()
+                        h_int = int(h)
+                        w_int = int(w)
+                        combined_mask = np.zeros((h_int, w_int), dtype=np.float32)
+                        for px, py, type_idx in all_points:
+                            coords = np.array([[px, py]], dtype=np.float32)
+                            labels = np.ones(1, dtype=np.int32)
+                            weight = CLICK_TYPES[type_idx]["weight"]
+                            try:
+                                area_masks, _, _ = predictor.predict(
+                                    point_coords=coords,
+                                    point_labels=labels,
+                                    multimask_output=False,
+                                )
+                            except Exception as e:
+                                logger.error(f'Predictor error: {e}')
+                                continue
+                            if area_masks is not None and len(area_masks) > 0:
+                                area_mask = area_masks[0].astype(np.float32)
+                                area_mask = np.squeeze(area_mask)
+                                if area_mask.shape != (h_int, w_int):
+                                    try:
+                                        area_mask = area_mask.reshape((h_int, w_int))
+                                    except Exception as e:
+                                        logger.error(f"[MASK] Could not reshape area_mask: {e}")
+                                        continue
+                                num_labels, labels_im = cv2.connectedComponents(area_mask.astype(np.uint8))
+                                if num_labels > 1:
+                                    multi_mask = (labels_im > 0).astype(np.float32)
+                                else:
+                                    multi_mask = area_mask
+                                weighted_mask = multi_mask * weight
+                                combined_mask = np.maximum(combined_mask, weighted_mask)
+                            else:
+                                logger.warning('No mask returned for point')
+                        combined_mask = np.clip(combined_mask, 0, 1)
+                        crop_n = int(letterbox_crop)
+                        if crop_n > 0 and crop_n * 2 < h_int:
+                            combined_mask[:crop_n, :] = 0.0
+                            combined_mask[-crop_n:, :] = 0.0
+                        mask = combined_mask if np.any(combined_mask > 0) else None
+                        if mask is not None:
+                            svf_value = compute_svf(mask, crop=letterbox_crop, h=h)
+                        else:
+                            svf_value = 0
+                        redraw_left_panel()
+                        redraw_image_area()
+                        redraw_status_bar()
                     else:
                         save_mask = False
                 # --- UI update before mask prediction ---
@@ -1067,56 +1098,44 @@ def main():
                 pygame.display.update(pygame.Rect(0, window_h - STATUS_BAR_HEIGHT, window_w, STATUS_BAR_HEIGHT))
                 pygame.event.pump()  # Ensure UI is responsive
                 # --- End status bar update ---
-                # Predict masks for all areas and combine (weighted)
-                all_areas = area_manager.get_all()
-                # --- Debug: log h, w types and values before mask creation ---
-                logger.debug(f"Preparing to create mask array: h={h} (type {type(h)}), w={w} (type {type(w)})")
+                # Predict masks for all points and combine (weighted)
+                all_points = point_manager.get_all()
                 h_int = int(h)
                 w_int = int(w)
-                logger.debug(f"Casted h={h_int} (type {type(h_int)}), w={w_int} (type {type(w_int)})")
                 combined_mask = np.zeros((h_int, w_int), dtype=np.float32)
-                logger.debug(f"Created combined_mask array with shape {combined_mask.shape}, dtype {combined_mask.dtype}")
-                for area in all_areas:
-                    if area and len(area) > 0:
-                        coords = np.array([(x, y) for x, y, t in area], dtype=np.float32)
-                        labels = np.ones(len(area), dtype=np.int32)
-                        weights = [CLICK_TYPES[t]["weight"] for _, _, t in area]
-                        logger.info(f"Predicting mask for area with {len(area)} points")
-                        try:
-                            area_masks, _, _ = predictor.predict(
-                                point_coords=coords,
-                                point_labels=labels,
-                                multimask_output=False,
-                            )
-                        except Exception as e:
-                            logger.error(f'Predictor error: {e}')
-                            continue
-                        if area_masks is not None and len(area_masks) > 0:
-                            area_mask = area_masks[0].astype(np.float32)
-                            logger.debug(f"[MASK] area_mask.shape before squeeze: {area_mask.shape}")
-                            area_mask = np.squeeze(area_mask)
-                            logger.debug(f"[MASK] area_mask.shape after squeeze: {area_mask.shape}")
-                            if area_mask.shape != (h_int, w_int):
-                                logger.warning(f"[MASK] area_mask shape {area_mask.shape} does not match (h, w)=({h_int}, {w_int}), attempting reshape.")
-                                try:
-                                    area_mask = area_mask.reshape((h_int, w_int))
-                                    logger.debug(f"[MASK] area_mask reshaped to {area_mask.shape}")
-                                except Exception as e:
-                                    logger.error(f"[MASK] Could not reshape area_mask: {e}")
-                                    continue
-                            num_labels, labels_im = cv2.connectedComponents(area_mask.astype(np.uint8))
-                            if num_labels > 1:
-                                max_label = 1 + np.argmax([
-                                    np.sum(labels_im == i) for i in range(1, num_labels)
-                                ])
-                                area_mask = (labels_im == max_label).astype(np.float32)
-                            # For each point, apply the weight and keep the maximum per pixel
-                            # Create a weighted mask for this area (use the max weight in the area)
-                            max_weight = max(weights) if weights else 0.0
-                            weighted_mask = area_mask * max_weight
-                            combined_mask = np.maximum(combined_mask, weighted_mask)
+                for px, py, type_idx in all_points:
+                    coords = np.array([[px, py]], dtype=np.float32)
+                    labels = np.ones(1, dtype=np.int32)
+                    weight = CLICK_TYPES[type_idx]["weight"]
+                    try:
+                        area_masks, _, _ = predictor.predict(
+                            point_coords=coords,
+                            point_labels=labels,
+                            multimask_output=False,
+                        )
+                    except Exception as e:
+                        logger.error(f'Predictor error: {e}')
+                        continue
+                    if area_masks is not None and len(area_masks) > 0:
+                        area_mask = area_masks[0].astype(np.float32)
+                        area_mask = np.squeeze(area_mask)
+                        if area_mask.shape != (h_int, w_int):
+                            try:
+                                area_mask = area_mask.reshape((h_int, w_int))
+                            except Exception as e:
+                                logger.error(f"[MASK] Could not reshape area_mask: {e}")
+                                continue
+                        # --- Multipolygon support: keep all connected components ---
+                        num_labels, labels_im = cv2.connectedComponents(area_mask.astype(np.uint8))
+                        if num_labels > 1:
+                            # Create a mask that is the union of all non-background components
+                            multi_mask = (labels_im > 0).astype(np.float32)
                         else:
-                            logger.warning('No mask returned for area')
+                            multi_mask = area_mask
+                        weighted_mask = multi_mask * weight
+                        combined_mask = np.maximum(combined_mask, weighted_mask)
+                    else:
+                        logger.warning('No mask returned for point')
                 # Normalize to [0,1] (clip)
                 combined_mask = np.clip(combined_mask, 0, 1)
                 # --- Letterbox crop: set top and bottom N pixels to black ---
