@@ -10,6 +10,7 @@ import logging
 import cv2
 import pygame.gfxdraw
 import math
+import csv
 
 # Configuration
 IMAGE_DIR = "images"  # directory with equirectangular images
@@ -219,7 +220,79 @@ def main():
         {"name": "Orange", "color": (255, 140, 0),  "weight": 0.5},
         {"name": "Yellow", "color": (255, 220, 40), "weight": 0.25},
     ]
-    active_click_type = 0  # Index into CLICK_TYPES
+    DIRECTION_TOOL = {"name": "W", "color": (255, 80, 200), "weight": None, "is_direction": True}
+    active_click_type = 0  # Index into CLICK_TYPES or 4 for direction tool
+    w_point = None  # (x, y) for W point in image coordinates
+
+    # --- Drawing direction points and labels ---
+    def draw_direction_points_func(screen, w_point, w_label_color=(255,80,200)):
+        if w_point is None:
+            return
+        px, py = w_point
+        h_img, w_img = h, w
+        def wrap_x(x):
+            return x % w_img
+        # All four points on the same Y as W
+        points = [
+            (px, py, 'W'),
+            (wrap_x(px - w_img//4), py, 'N'),
+            (wrap_x(px - w_img//2), py, 'E'),
+            (wrap_x(px - 3*w_img//4), py, 'S'),
+        ]
+        for x, y, label in points:
+            sx = int(x * scale_factor) - offset_x
+            sy = int(y * scale_factor) - offset_y
+            if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
+                pygame.draw.circle(screen, w_label_color, (LEFT_PANEL_WIDTH + sx, sy), 10)
+                font = pygame.font.Font(MODERN_FONT_NAME, 18)
+                label_surf = font.render(label, True, w_label_color)
+                label_rect = label_surf.get_rect(center=(LEFT_PANEL_WIDTH + sx, sy - 18))
+                screen.blit(label_surf, label_rect)
+
+    def draw_direction_points_hemisphere(screen, w_point, out_size, crop_n, w_label_color=(255,80,200)):
+        """
+        Draw W, N, E, S as lines from the outer edge inward by ~20° zenith angle, with a circle and label at the inner end.
+        """
+        if w_point is None:
+            return
+        px, py = w_point
+        h_img, w_img = h - 2*crop_n, w
+        def wrap_x(x):
+            return x % w_img
+        # All four points on the same Y as W
+        points = [
+            (px, py, 'W'),
+            (wrap_x(px - w_img//4), py, 'N'),
+            (wrap_x(px - w_img//2), py, 'E'),
+            (wrap_x(px - 3*w_img//4), py, 'S'),
+        ]
+        out_r = out_size // 2
+        # 20 degrees in radians
+        theta_inward = math.radians(20)
+        theta_outer = math.pi / 2  # 90° zenith (edge)
+        theta_inner = theta_outer - theta_inward  # ~70° zenith
+        for x, y, label in points:
+            py_cropped = y - crop_n
+            if 0 <= py_cropped < h_img:
+                # Compute azimuth (phi) for this direction
+                phi = 2 * math.pi * (x / w_img)
+                # Outer point (edge)
+                r_outer = out_r * (theta_outer / (math.pi / 2))  # = out_r
+                u_outer = out_r + r_outer * math.sin(phi)
+                v_outer = out_r - r_outer * math.cos(phi)
+                # Inner point (~20° in)
+                r_inner = out_r * (theta_inner / (math.pi / 2))
+                u_inner = out_r + r_inner * math.sin(phi)
+                v_inner = out_r - r_inner * math.cos(phi)
+                # Draw line from outer to inner
+                pygame.draw.line(screen, w_label_color, (LEFT_PANEL_WIDTH + int(u_outer), int(v_outer)), (LEFT_PANEL_WIDTH + int(u_inner), int(v_inner)), 4)
+                # Draw circle at inner end
+                pygame.draw.circle(screen, w_label_color, (LEFT_PANEL_WIDTH + int(u_inner), int(v_inner)), 10)
+                # Draw label at inner end
+                font = pygame.font.Font(MODERN_FONT_NAME, 18)
+                label_surf = font.render(label, True, w_label_color)
+                label_rect = label_surf.get_rect(center=(LEFT_PANEL_WIDTH + int(u_inner), int(v_inner) - 18))
+                screen.blit(label_surf, label_rect)
 
     # --- Refactored: Each point is its own mask prompt ---
     class PointManager:
@@ -430,10 +503,22 @@ def main():
             dot_centers.append((cx, cy))
             # Draw background highlight if selected
             if i == active_click_type:
-                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), dot_radius + 6)
+                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), dot_radius + 4)
             pygame.draw.circle(screen, t["color"], (cx, cy), dot_radius)
             # Draw border
             pygame.draw.circle(screen, (40, 40, 40), (cx, cy), dot_radius, 3)
+        # Draw the pink 'W' direction tool, spaced further right
+        w_cx = selector_x_start + n_dots * spacing_x + 38  # extra distance
+        w_cy = selector_y
+        if active_click_type == len(CLICK_TYPES):
+            pygame.draw.circle(screen, (255, 255, 255), (w_cx, w_cy), dot_radius + 4)
+        pygame.draw.circle(screen, DIRECTION_TOOL["color"], (w_cx, w_cy), dot_radius)
+        pygame.draw.circle(screen, (40, 40, 40), (w_cx, w_cy), dot_radius, 3)
+        # Draw 'W' label below the pink dot
+        percent_font = pygame.font.Font(MODERN_FONT_NAME, 16)
+        w_label = percent_font.render("W", MODERN_FONT_ANTIALIAS, (255,255,255))
+        w_label_rect = w_label.get_rect(center=(w_cx, w_cy + dot_radius + 14))
+        screen.blit(w_label, w_label_rect)
         # Draw percentages below each dot
         percent_font = pygame.font.Font(MODERN_FONT_NAME, 16)
         for i, t in enumerate(CLICK_TYPES):
@@ -554,7 +639,7 @@ def main():
             text_surf = panel_font_subtle.render(text, MODERN_FONT_ANTIALIAS, PANEL_SUBTLE)
             screen.blit(text_surf, (heading_margin, y))
             y += 22
-        return show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect
+        return show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect, (w_cx, w_cy, dot_radius)
 
     def draw_status_bar():
         # Draw status bar at the bottom (flat grey, less height, text left)
@@ -651,9 +736,14 @@ def main():
                     if 0 <= py_cropped < h_cropped:
                         res = project_point_equi_to_fisheye(px, py_cropped, w, h_cropped, out_size // 2)
                         if res is not None:
-                            sx, sy = res
-                            pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
-                            pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
+                            u, v = res
+                            cx = LEFT_PANEL_WIDTH + int(u)
+                            cy = int(v)
+                            color = CLICK_TYPES[type_idx]["color"]
+                            pygame.draw.circle(screen, color, (cx, cy), point_radius)
+            # Draw direction points overlay if w_point is set
+            if w_point is not None:
+                draw_direction_points_hemisphere(screen, w_point, out_size, crop_n)
         else:
             # Equirectangular view
             # Draw checkerboard background for transparency debug (in image area)
@@ -702,8 +792,11 @@ def main():
                     sx = int(px * scale_factor) - offset_x
                     sy = int(py * scale_factor) - offset_y
                     if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
-                        pygame.draw.circle(screen, (0, 0, 0), (LEFT_PANEL_WIDTH + sx, sy), point_radius + 2)
-                        pygame.draw.circle(screen, CLICK_TYPES[type_idx]["color"], (LEFT_PANEL_WIDTH + sx, sy), point_radius)
+                        color = CLICK_TYPES[type_idx]["color"]
+                        pygame.draw.circle(screen, color, (LEFT_PANEL_WIDTH + sx, sy), point_radius)
+            # Draw direction points overlay if w_point is set
+            if w_point is not None:
+                draw_direction_points_func(screen, w_point)
         # --- SVF Math Visualization ---
         if show_math_viz or show_horizon:
             if show_spherical_view:
@@ -801,7 +894,7 @@ def main():
         pygame.display.update(status_bar_rect)
         pygame.event.pump()
         base, ext = os.path.splitext(image_file)
-        import re
+
         # Always use PNG for export
         eq_name = f"{base}_SVF{svf_value*100:.3f}_EQ.png"
         hs_name = f"{base}_SVF{svf_value*100:.3f}_HS.png"
@@ -837,6 +930,34 @@ def main():
             quantized_hs_5level = (quantized_hs * 64).clip(0, 255).astype(np.uint8)
             Image.fromarray(quantized_hs_5level, mode='L').save(hs_mask_path)
             logger.info(f"Saved hemispherical mask to {hs_mask_path}")
+        # --- CSV export ---
+        csv_path = os.path.join(SVF_DIR, "svf_results.csv")
+        Station_ID = base
+        base_path = image_file  # includes extension
+        svf_val = float(svf_value)
+        eq_orig = eq_name
+        eq_mask = eq_mask_name
+        hs_proj = hs_name
+        hs_mask = hs_mask_name
+        hs_north = ""  # null for now
+        # Compute north pixel (EQ x value) if w_point is set
+        if w_point is not None:
+            px, py = w_point
+            px_north = int((px - w_img // 4) % w_img)
+        else:
+            px_north = ""
+        # Write header if file does not exist
+        write_header = not os.path.exists(csv_path)
+        with open(csv_path, "a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            if write_header:
+                writer.writerow([
+                    "Station_ID", "base_path", "svf", "eq_orig", "eq_mask", "hs_proj", "hs_mask", "hs_north", "px_north"
+                ])
+            writer.writerow([
+                Station_ID, base_path, svf_val, eq_orig, eq_mask, hs_proj, hs_mask, hs_north, px_north
+            ])
+        logger.info(f"Wrote CSV row to {csv_path}")
         # Update file list so user can go back to this file
         reload_files()
         # Show "Saved images." message in green
@@ -904,7 +1025,7 @@ def main():
             predictor.set_image(img)
             logger.info(model_loading_status['status'])
         # --- Always update toggle rects at start of event loop ---
-        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect = draw_left_panel()
+        show_points_rect, show_masks_rect, horizon_toggle_rect, spherical_toggle_rect, save_btn_rect, prev_btn_rect, next_btn_rect, w_dot_info = draw_left_panel()
         draw_image_area()
         draw_status_bar()
         pygame.display.flip()
@@ -990,6 +1111,11 @@ def main():
                     redraw_left_panel()
                     redraw_image_area()
                     redraw_status_bar()
+                elif event.key == pygame.K_5:
+                    active_click_type = len(CLICK_TYPES)
+                    status_text = "Selected W (Set West direction)"
+                    redraw_left_panel()
+                    redraw_status_bar()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
                 # --- Left panel navigation buttons ---
@@ -1056,6 +1182,12 @@ def main():
                         status_text = f"Selected {CLICK_TYPES[i]['name']} ({int(CLICK_TYPES[i]['weight']*100)}%)"
                         break
                 else:
+                    # Check if click is in the pink 'W' dot
+                    w_cx, w_cy, w_dot_radius = w_dot_info
+                    if (mx - w_cx) ** 2 + (my - w_cy) ** 2 <= (w_dot_radius + 8) ** 2:
+                        active_click_type = len(CLICK_TYPES)
+                        status_text = "Selected W (Set West direction)"
+                        break
                     # Only handle events in image area
                     img_x = img_y = None
                     if show_spherical_view:
@@ -1066,7 +1198,7 @@ def main():
                         res = project_point_fisheye_to_equi(x, y, w, h - 2 * crop_n, out_size // 2)
                         if res is not None:
                             img_x, img_y = res
-                            img_y += crop_n  # adjust back to full image coordinates
+                            img_y += crop_n
                     else:
                         if mx < LEFT_PANEL_WIDTH or my >= img_area_h:
                             continue
@@ -1076,65 +1208,20 @@ def main():
                         img_y = int((y + offset_y) / scale_factor)
                     if img_x is None or img_y is None:
                         continue
-                    if event.button == 1:  # left-click: add point
+                    if active_click_type == len(CLICK_TYPES):
+                        # Set W-point and show all four direction points
+                        w_point = (img_x, img_y)
+                        status_text = f"Set W-point at x={img_x}, y={img_y}"
+                        # Do not redraw/continue here; let normal flow handle UI
+                        # continue  # <-- removed to prevent image disappearing
+                    elif event.button == 1:
                         point_manager.add_point(img_x, img_y, active_click_type)
-                        logger.debug(f'Added point: {(img_x, img_y)}')
-                        save_mask = True
-                        status_text = f"Added point at ({img_x}, {img_y}) ({CLICK_TYPES[active_click_type]['name']})"
-                    elif event.button == 3:  # right-click: remove nearest point
+                        status_text = f"Added point at x={img_x}, y={img_y} ({CLICK_TYPES[active_click_type]['name']})"
+                    elif event.button == 3:
                         point_manager.remove_nearest(x, y, scale_factor, offset_x, offset_y)
                         status_text = f"Removed nearest point."
-                        # --- Update SVF after point removal ---
-                        all_points = point_manager.get_all()
-                        h_int = int(h)
-                        w_int = int(w)
-                        combined_mask = np.zeros((h_int, w_int), dtype=np.float32)
-                        for px, py, type_idx in all_points:
-                            coords = np.array([[px, py]], dtype=np.float32)
-                            labels = np.ones(1, dtype=np.int32)
-                            weight = CLICK_TYPES[type_idx]["weight"]
-                            try:
-                                area_masks, _, _ = predictor.predict(
-                                    point_coords=coords,
-                                    point_labels=labels,
-                                    multimask_output=False,
-                                )
-                            except Exception as e:
-                                logger.error(f'Predictor error: {e}')
-                                continue
-                            if area_masks is not None and len(area_masks) > 0:
-                                area_mask = area_masks[0].astype(np.float32)
-                                area_mask = np.squeeze(area_mask)
-                                if area_mask.shape != (h_int, w_int):
-                                    try:
-                                        area_mask = area_mask.reshape((h_int, w_int))
-                                    except Exception as e:
-                                        logger.error(f"[MASK] Could not reshape area_mask: {e}")
-                                        continue
-                                num_labels, labels_im = cv2.connectedComponents(area_mask.astype(np.uint8))
-                                if num_labels > 1:
-                                    multi_mask = (labels_im > 0).astype(np.float32)
-                                else:
-                                    multi_mask = area_mask
-                                weighted_mask = multi_mask * weight
-                                combined_mask = np.maximum(combined_mask, weighted_mask)
-                            else:
-                                logger.warning('No mask returned for point')
-                        combined_mask = np.clip(combined_mask, 0, 1)
-                        crop_n = int(letterbox_crop)
-                        if crop_n > 0 and crop_n * 2 < h_int:
-                            combined_mask[:crop_n, :] = 0.0
-                            combined_mask[-crop_n:, :] = 0.0
-                        mask = combined_mask if np.any(combined_mask > 0) else None
-                        if mask is not None:
-                            svf_value = compute_svf(mask, crop=letterbox_crop, h=h)
-                        else:
-                            svf_value = 0
-                        redraw_left_panel()
-                        redraw_image_area()
-                        redraw_status_bar()
                     else:
-                        save_mask = False
+                        continue
                 # --- UI update before mask prediction ---
                 prev_status_text = status_text
                 status_text = process_message  # Show 'Processing...' in yellow
