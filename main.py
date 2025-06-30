@@ -2,7 +2,7 @@ import sys
 import os
 import pygame
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torch
 from segment_anything import sam_model_registry, SamPredictor
 import datetime
@@ -11,6 +11,7 @@ import cv2
 import pygame.gfxdraw
 import math
 import csv
+from scipy.ndimage import rotate as ndimage_rotate
 
 # Configuration
 IMAGE_DIR = "images"  # directory with equirectangular images
@@ -232,12 +233,12 @@ def main():
         h_img, w_img = h, w
         def wrap_x(x):
             return x % w_img
-        # All four points on the same Y as W
+        # Correct mapping: clicked=W, right=N, opposite=E, left=S (for equirectangular)
         points = [
-            (px, py, 'W'),
-            (wrap_x(px - w_img//4), py, 'N'),
-            (wrap_x(px - w_img//2), py, 'E'),
-            (wrap_x(px - 3*w_img//4), py, 'S'),
+            (px, py, 'W'),  # Clicked = West
+            (wrap_x(px + w_img//4), py, 'N'),  # Right = North
+            (wrap_x(px + w_img//2), py, 'E'),  # Opposite = East
+            (wrap_x(px + 3*w_img//4), py, 'S'),  # Left = South
         ]
         for x, y, label in points:
             sx = int(x * scale_factor) - offset_x
@@ -252,6 +253,7 @@ def main():
     def draw_direction_points_hemisphere(screen, w_point, out_size, crop_n, w_label_color=(255,80,200)):
         """
         Draw W, N, E, S as lines from the outer edge inward by ~20° zenith angle, with a circle and label at the inner end.
+        The direction points are mirrored over the horizon (azimuth φ → φ+π) to project ground directions onto the sky.
         """
         if w_point is None:
             return
@@ -259,36 +261,30 @@ def main():
         h_img, w_img = h - 2*crop_n, w
         def wrap_x(x):
             return x % w_img
-        # All four points on the same Y as W
+        # Now: W, N, E, S (clicked, right, opposite, left)
         points = [
             (px, py, 'W'),
-            (wrap_x(px - w_img//4), py, 'N'),
-            (wrap_x(px - w_img//2), py, 'E'),
-            (wrap_x(px - 3*w_img//4), py, 'S'),
+            (wrap_x(px + w_img//4), py, 'N'),
+            (wrap_x(px + w_img//2), py, 'E'),
+            (wrap_x(px + 3*w_img//4), py, 'S'),
         ]
         out_r = out_size // 2
-        # 20 degrees in radians
         theta_inward = math.radians(20)
         theta_outer = math.pi / 2  # 90° zenith (edge)
         theta_inner = theta_outer - theta_inward  # ~70° zenith
         for x, y, label in points:
             py_cropped = y - crop_n
             if 0 <= py_cropped < h_img:
-                # Compute azimuth (phi) for this direction
-                phi = 2 * math.pi * (x / w_img)
-                # Outer point (edge)
-                r_outer = out_r * (theta_outer / (math.pi / 2))  # = out_r
-                u_outer = out_r + r_outer * math.sin(phi)
-                v_outer = out_r - r_outer * math.cos(phi)
-                # Inner point (~20° in)
+                phi_eq = 2 * math.pi * (x / w_img)
+                phi_hs = (phi_eq + math.pi) % (2 * math.pi)
+                r_outer = out_r * (theta_outer / (math.pi / 2))
+                u_outer = out_r + r_outer * math.sin(phi_hs)
+                v_outer = out_r + r_outer * math.cos(phi_hs)
                 r_inner = out_r * (theta_inner / (math.pi / 2))
-                u_inner = out_r + r_inner * math.sin(phi)
-                v_inner = out_r - r_inner * math.cos(phi)
-                # Draw line from outer to inner
+                u_inner = out_r + r_inner * math.sin(phi_hs)
+                v_inner = out_r + r_inner * math.cos(phi_hs)
                 pygame.draw.line(screen, w_label_color, (LEFT_PANEL_WIDTH + int(u_outer), int(v_outer)), (LEFT_PANEL_WIDTH + int(u_inner), int(v_inner)), 4)
-                # Draw circle at inner end
                 pygame.draw.circle(screen, w_label_color, (LEFT_PANEL_WIDTH + int(u_inner), int(v_inner)), 10)
-                # Draw label at inner end
                 font = pygame.font.Font(MODERN_FONT_NAME, 18)
                 label_surf = font.render(label, True, w_label_color)
                 label_rect = label_surf.get_rect(center=(LEFT_PANEL_WIDTH + int(u_inner), int(v_inner) - 18))
@@ -415,20 +411,22 @@ def main():
         Map equirectangular (x, y) to fisheye (u, v) coordinates.
         Only zenith angles 0..pi/2 (northern hemisphere) are mapped.
         Returns (u, v) in fisheye image (centered at (out_r, out_r), radius out_r).
+        Azimuth is inverted so that right in EQ maps to right in HS (photographic convention).
         """
         theta = math.pi * y / h  # zenith angle [0, pi]
-        phi = 2 * math.pi * x / w  # azimuth [0, 2pi]
+        phi = 2 * math.pi * (1 - x / w)  # azimuth [0, 2pi], INVERTED
         if theta > math.pi / 2:
-            return None  # Only northern hemisphere
+            return None
         r = out_r * theta / (math.pi / 2)
         u = out_r + r * math.sin(phi)
         v = out_r - r * math.cos(phi)
-        return int(u), int(v)
+        return u, v
 
     def fisheye_to_equi_coords(u, v, w, h, out_r):
         """
         Map fisheye (u, v) to equirectangular (x, y).
         Returns (x, y) in equirectangular image, or None if outside hemisphere.
+        Azimuth is inverted so that right in HS maps to right in EQ (photographic convention).
         """
         dx = u - out_r
         dy = out_r - v
@@ -439,6 +437,7 @@ def main():
         phi = math.atan2(dx, dy)
         if phi < 0:
             phi += 2 * math.pi
+        phi = (2 * math.pi - phi) % (2 * math.pi)  # Invert azimuth
         x = int((phi / (2 * math.pi)) * w)
         y = int((theta / math.pi) * h)
         return x, y
@@ -876,7 +875,7 @@ def main():
         masked_surf = None
         mouse_img_x = None
         mouse_img_y = None
-        pygame.display.set_caption(f"SAM Segmenter - {image_file}")
+        pygame.display
         # Ensure predictor is updated with new image
         if model_loaded[0] is not None:
             sam, predictor_local = model_loaded[0]
@@ -921,15 +920,18 @@ def main():
         fisheye_img = project_equi_to_fisheye(img_cropped, out_size)
         Image.fromarray(fisheye_img).save(hs_path)
         logger.info(f"Saved hemispherical SVF image to {hs_path}")
-        # Save hemispherical mask as PNG (quantized)
-        if mask is not None:
-            mask_cropped = mask[crop_n:mask.shape[0]-crop_n, :] if crop_n > 0 else mask
-            fisheye_mask = project_mask_equi_to_fisheye(mask_cropped, out_size)
-            bins = [0.13, 0.38, 0.63, 0.88, 1.01]
-            quantized_hs = np.digitize(fisheye_mask, bins)
-            quantized_hs_5level = (quantized_hs * 64).clip(0, 255).astype(np.uint8)
-            Image.fromarray(quantized_hs_5level, mode='L').save(hs_mask_path)
-            logger.info(f"Saved hemispherical mask to {hs_mask_path}")
+        # --- Additional exports: Rotated hemisphere (north up) ---
+        fisheye_north = rotate_north_up(fisheye_img, w_point, w_img)
+        hs_north_name = f"{base}_SVF{svf_value*100:.3f}_HS_N.png"
+        hs_north_path = os.path.join(SVF_DIR, hs_north_name)
+        Image.fromarray(fisheye_north.astype(np.uint8)).save(hs_north_path)
+        logger.info(f"Saved rotated hemisphere (north up) to {hs_north_path}")
+        # --- Additional exports: Rotated hemisphere with annotations ---
+        fisheye_north_annot = annotate_directions_on_hemisphere(fisheye_north, w_point=w_point, w_img=w_img)
+        hs_north_annot_name = f"{base}_SVF{svf_value*100:.3f}_HS_N_annotated.png"
+        hs_north_annot_path = os.path.join(SVF_DIR, hs_north_annot_name)
+        Image.fromarray(fisheye_north_annot.astype(np.uint8)).save(hs_north_annot_path)
+        logger.info(f"Saved rotated hemisphere with annotations to {hs_north_annot_path}")
         # --- CSV export ---
         csv_path = os.path.join(SVF_DIR, "svf_results.csv")
         Station_ID = base
@@ -1316,6 +1318,7 @@ def main():
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 2:
                     dragging = False
+                   
                     logger.info('End drag')
             elif event.type == pygame.MOUSEMOTION:
                 mx, my = event.pos
@@ -1335,10 +1338,10 @@ def main():
                     if LEFT_PANEL_WIDTH <= mx < window_w and 0 <= my < img_area_h:
                         x = mx - LEFT_PANEL_WIDTH
                         y = my
-                        mouse_img_x = int((x + offset_x) / scale_factor)
-                        mouse_img_y = int((y + offset_y) / scale_factor)
-                        mouse_img_x = max(0, min(mouse_img_x, w - 1))
-                        mouse_img_y = max(0, min(mouse_img_y, h - 1))
+                        img_x = int((x + offset_x) / scale_factor)
+                        img_y = int((y + offset_y) / scale_factor)
+                        mouse_img_x = max(0, min(img_x, w - 1))
+                        mouse_img_y = max(0, min(img_y, h - 1))
                     else:
                         mouse_img_x = None
                         mouse_img_y = None
@@ -1353,6 +1356,85 @@ def main():
     logger.info('Exiting SAM Segmenter')
     pygame.quit()
     sys.exit()
+
+# --- Hemisphere rotation and annotation helpers ---
+def rotate_north_up(fisheye_img, w_point, w_img):
+    """
+    Rotate the hemispherical (fisheye) image so that north is up, using the W point as reference.
+    North is 90° right of west (i.e., +π/2 azimuth from W).
+    If w_point is None, returns the image unchanged.
+    """
+    if w_point is None or w_img is None:
+        return fisheye_img
+    import numpy as np
+    from PIL import Image
+    px, _ = w_point
+    north_x = (px + w_img // 4) % w_img
+    north_angle = 360.0 * north_x / w_img
+    img_pil = Image.fromarray(fisheye_img)
+    rotated = img_pil.rotate(-north_angle, resample=Image.BILINEAR)
+    return np.array(rotated)
+
+def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
+    """
+    Overlay dashes and labels for W, N, E, S directions on the hemisphere image.
+    Points are mirrored over the horizon for southern hemisphere source.
+    Fixes 15 degree clockwise offset, makes dashes longer and labels bigger.
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    out_img = fisheye_img.copy()
+    h, w = out_img.shape[:2]
+    cx, cy = w // 2, h // 2
+    r = min(cx, cy)
+    pil_img = Image.fromarray(out_img)
+    draw = ImageDraw.Draw(pil_img, 'RGBA')
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
+    except Exception:
+        font = ImageFont.load_default()
+    if w_point is not None and w_img is not None:
+        px, _ = w_point
+        base = px % w_img
+        directions = [
+            (base, 'W'),
+            ((base + w_img//4) % w_img, 'N'),
+            ((base + w_img//2) % w_img, 'E'),
+            ((base + 3*w_img//4) % w_img, 'S'),
+        ]
+    else:
+        directions = [
+            (0, 'W'),
+            (w//4, 'N'),
+            (w//2, 'E'),
+            (3*w//4, 'S'),
+        ]
+    mirrored_angles = []
+    for x, label in directions:
+        phi = 2 * np.pi * (x / (w_img if w_img else w))
+        phi_mirrored = (phi + np.pi) % (2 * np.pi)
+        angle = np.degrees(phi_mirrored)
+        angle -= 15
+        mirrored_angles.append((angle, label))
+    dash_len = 64
+    dash_color = (255, 255, 255, 140)
+    label_color = (255, 255, 255, 220)
+    for angle, label in mirrored_angles:
+        theta = np.deg2rad(angle - 90)
+        x0 = cx + int((r - dash_len) * np.cos(theta))
+        y0 = cy + int((r - dash_len) * np.sin(theta))
+        x1 = cx + int((r - 8) * np.cos(theta))
+        y1 = cy + int((r - 8) * np.sin(theta))
+        draw.line([(x0, y0), (x1, y1)], fill=dash_color, width=5)
+        lx = cx + int((r + 18) * np.cos(theta))
+        ly = cy + int((r + 18) * np.sin(theta))
+        # Use font.getsize for text size (Pillow >=7)
+        try:
+            w_label, h_label = font.getsize(label)
+        except AttributeError:
+            w_label, h_label = font.getbbox(label)[2:4] if hasattr(font, 'getbbox') else (24, 24)
+        draw.text((lx - w_label//2, ly - h_label//2), label, font=font, fill=label_color)
+    return np.array(pil_img)
 
 if __name__ == '__main__':
     main()
