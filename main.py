@@ -1381,6 +1381,7 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
     Overlay dashes and labels for W, N, E, S directions on the hemisphere image.
     Directions are counterclockwise: W (reference), N (90° ccw), E (180°), S (270° ccw from W).
     This matches the viewport convention (up is view, so E/W are swapped).
+    Labels and lines are bigger and moved further inwards. Labels have a black outline.
     """
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
@@ -1391,53 +1392,65 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
     pil_img = Image.fromarray(out_img)
     draw = ImageDraw.Draw(pil_img, 'RGBA')
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 72)  # Increased font size
     except Exception:
         font = ImageFont.load_default()
     # Compute direction azimuths: W, N, E, S (counterclockwise from W)
     if w_point is not None and w_img is not None:
         px, _ = w_point
         base = px % w_img
-        # Counterclockwise: W (0), N (-90°), E (180°), S (+90°)
         directions = [
-            (base, 'W'),
-            ((base - w_img//4) % w_img, 'N'),
-            ((base + w_img//2) % w_img, 'E'),
-            ((base + w_img//4) % w_img, 'S'),
+            (base, 'E'),
+            ((base - w_img//4) % w_img, 'S'),
+            ((base + w_img//2) % w_img, 'W'),
+            ((base + w_img//4) % w_img, 'N'),
         ]
+        # Compute north_angle as in rotate_north_up
+        north_x = (px - w_img // 4) % w_img
+        north_angle = 360.0 * north_x / w_img
     else:
-        # Default: W at 0, N at -90°, E at 180°, S at +90°
         directions = [
             (0, 'W'),
             (3*w//4, 'N'),
             (w//2, 'E'),
             (w//4, 'S'),
         ]
-    # Compute angles for drawing (counterclockwise, 0° = right, 90° = down, 180° = left, 270° = up)
+        north_angle = 0.0
     angles_labels = []
     for x, label in directions:
         phi = 2 * np.pi * (x / (w_img if w_img else w))
-        # For hemisphere: 0° = right (E), 90° = down (S), 180° = left (W), 270° = up (N)
-        # But our mapping: 0° = W, so subtract 90° per step counterclockwise
         angle = np.degrees(phi)
         angle = (angle - 90) % 360  # rotate so that 0° is up (N)
+        # --- Fix: subtract north_angle to match rotated image ---
+        angle = (angle - north_angle) % 360
         angles_labels.append((angle, label))
-    dash_len = 64
-    dash_color = (255, 255, 255, 140)
-    label_color = (255, 255, 255, 220)
+    dash_len = 120  # bigger
+    dash_color = (255, 255, 255, 220)
+    label_color = (255, 255, 255, 255)
+    outline_color = (0, 0, 0, 255)
     for angle, label in angles_labels:
         theta = np.deg2rad(angle)
+        # Make lines thicker and longer
         x0 = cx + int((r - dash_len) * np.cos(theta))
         y0 = cy + int((r - dash_len) * np.sin(theta))
-        x1 = cx + int((r - 8) * np.cos(theta))
-        y1 = cy + int((r - 8) * np.sin(theta))
-        draw.line([(x0, y0), (x1, y1)], fill=dash_color, width=5)
-        lx = cx + int((r + 18) * np.cos(theta))
-        ly = cy + int((r + 18) * np.sin(theta))
+        x1 = cx + int((r - 24) * np.cos(theta))
+        y1 = cy + int((r - 24) * np.sin(theta))
+        draw.line([(x0, y0), (x1, y1)], fill=dash_color, width=12)  # Thicker line
+        # Move label further inwards
+        label_r = r - 100  # further inwards
+        lx = cx + int(label_r * np.cos(theta))
+        ly = cy + int(label_r * np.sin(theta))
         try:
             w_label, h_label = font.getsize(label)
         except AttributeError:
-            w_label, h_label = font.getbbox(label)[2:4] if hasattr(font, 'getbbox') else (24, 24)
+            w_label, h_label = font.getbbox(label)[2:4] if hasattr(font, 'getbbox') else (48, 48)
+        # Draw black outline by drawing text at offsets
+        for ox in [-3, 0, 3]:
+            for oy in [-3, 0, 3]:
+                if ox == 0 and oy == 0:
+                    continue
+                draw.text((lx - w_label//2 + ox, ly - h_label//2 + oy), label, font=font, fill=outline_color)
+        # Draw white text
         draw.text((lx - w_label//2, ly - h_label//2), label, font=font, fill=label_color)
     return np.array(pil_img)
 
