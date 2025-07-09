@@ -13,6 +13,13 @@ import math
 import csv
 from scipy.ndimage import rotate as ndimage_rotate
 
+# Declaration of working slop:
+# This project was vibe-coded with Github Copilot. 
+# 
+# If you want to try to maintain this code, don't. 
+# Save your sanity and rewrite instead.
+
+
 # Configuration
 IMAGE_DIR = "images"  # directory with equirectangular images
 SAM_MODEL_TYPE = "vit_h"  # model type: vit_h, vit_l, vit_b
