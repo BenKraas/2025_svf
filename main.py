@@ -496,12 +496,13 @@ def main():
         sep_y = 28 + panel_heading_font.get_height() + 15
         pygame.draw.line(screen, PANEL_DIVIDER, (heading_margin, sep_y), (LEFT_PANEL_WIDTH - heading_margin, sep_y), 2)
         # --- Click type selector (4 in a row, left of SVF text) ---
-        dot_radius = 14
+        dot_radius = 18  # Slightly larger than original, but not huge
         selector_y = sep_y + 32
         n_dots = len(CLICK_TYPES)
-        dots_area_width = 180
-        selector_x_start = heading_margin + 10  # Respect left padding
-        spacing_x = dots_area_width // (n_dots - 1) if n_dots > 1 else 0
+        total_dots = n_dots + 1  # 4 percentages + 1 W
+        dots_area_width = 220  # Enough for 5 dots with spacing
+        selector_x_start = heading_margin + 28  # Respect left padding, but not too much
+        spacing_x = dots_area_width // (total_dots - 1) if total_dots > 1 else 0
         dot_centers = []
         for i, t in enumerate(CLICK_TYPES):
             cx = selector_x_start + i * spacing_x
@@ -513,8 +514,8 @@ def main():
             pygame.draw.circle(screen, t["color"], (cx, cy), dot_radius)
             # Draw border
             pygame.draw.circle(screen, (40, 40, 40), (cx, cy), dot_radius, 3)
-        # Draw the pink 'W' direction tool, spaced further right
-        w_cx = selector_x_start + n_dots * spacing_x + 38  # extra distance
+        # Draw the pink 'W' direction tool, spaced as 5th dot
+        w_cx = selector_x_start + n_dots * spacing_x
         w_cy = selector_y
         if active_click_type == len(CLICK_TYPES):
             pygame.draw.circle(screen, (255, 255, 255), (w_cx, w_cy), dot_radius + 4)
@@ -523,7 +524,7 @@ def main():
         # Draw 'W' label below the pink dot
         percent_font = pygame.font.Font(MODERN_FONT_NAME, 16)
         w_label = percent_font.render("W", MODERN_FONT_ANTIALIAS, (255,255,255))
-        w_label_rect = w_label.get_rect(center=(w_cx, w_cy + dot_radius + 14))
+        w_label_rect = w_label.get_rect(center=(w_cx, w_cy + dot_radius + 12))
         screen.blit(w_label, w_label_rect)
         # Draw percentages below each dot
         percent_font = pygame.font.Font(MODERN_FONT_NAME, 16)
@@ -531,7 +532,7 @@ def main():
             cx, cy = dot_centers[i]
             percent_label = f"{int(t['weight']*100)}%"
             percent_surf = percent_font.render(percent_label, MODERN_FONT_ANTIALIAS, (255,255,255))
-            percent_rect = percent_surf.get_rect(center=(cx, cy + dot_radius + 14))
+            percent_rect = percent_surf.get_rect(center=(cx, cy + dot_radius + 12))
             screen.blit(percent_surf, percent_rect)
         # --- SVF (%) label and value below the buttons, left-aligned with padding ---
         svf_label_font = pygame.font.Font(MODERN_FONT_NAME, 24)
@@ -1175,25 +1176,28 @@ def main():
                     redraw_status_bar()
                     continue
                 # Check if click is in click type selector (row layout, left panel, centered)
-                dot_radius = 14
+                dot_radius = 18  # Match the new radius
                 sep_y = 28 + panel_heading_font.get_height() + 15
                 selector_y = sep_y + 32
                 heading_margin = 32
                 n_dots = len(CLICK_TYPES)
-                dots_area_width = 180
-                selector_x_start = heading_margin + 10  # Match draw_left_panel
-                spacing_x = dots_area_width // (n_dots - 1) if n_dots > 1 else 0
+                total_dots = n_dots + 1
+                dots_area_width = 220
+                selector_x_start = heading_margin + 28
+                spacing_x = dots_area_width // (total_dots - 1) if total_dots > 1 else 0
                 for i in range(n_dots):
                     cx = selector_x_start + i * spacing_x
                     cy = selector_y
-                    if (mx - cx) ** 2 + (my - cy) ** 2 <= (dot_radius + 8) ** 2:
+                    if (mx - cx) ** 2 + (my - cy) ** 2 <= (dot_radius + 7) ** 2:
                         active_click_type = i
                         status_text = f"Selected {CLICK_TYPES[i]['name']} ({int(CLICK_TYPES[i]['weight']*100)}%)"
                         break
                 else:
                     # Check if click is in the pink 'W' dot
-                    w_cx, w_cy, w_dot_radius = w_dot_info
-                    if (mx - w_cx) ** 2 + (my - w_cy) ** 2 <= (w_dot_radius + 8) ** 2:
+                    w_cx = selector_x_start + n_dots * spacing_x
+                    w_cy = selector_y
+                    w_dot_radius = dot_radius
+                    if (mx - w_cx) ** 2 + (my - w_cy) ** 2 <= (w_dot_radius + 7) ** 2:
                         active_click_type = len(CLICK_TYPES)
                         status_text = "Selected W (Set West direction)"
                         break
@@ -1314,6 +1318,7 @@ def main():
                     logger.info(f"SVF: {svf_value*100:.1f}%")
                 processing = False
                 status_text = prev_status_text
+
                 # --- UI update after mask prediction ---
                 # Only clear and redraw the image area, not the status bar
                 screen.fill((0, 0, 0), rect=image_area_rect)
