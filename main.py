@@ -534,11 +534,14 @@ def main():
             percent_surf = percent_font.render(percent_label, MODERN_FONT_ANTIALIAS, (255,255,255))
             percent_rect = percent_surf.get_rect(center=(cx, cy + dot_radius + 12))
             screen.blit(percent_surf, percent_rect)
-        # --- SVF (%) label and value below the buttons, left-aligned with padding ---
+        # Move second separator here, above SVF heading/value
+        dots_bottom_y = selector_y + dot_radius + 24  # Add a bit of space below dots/labels
+        pygame.draw.line(screen, PANEL_DIVIDER, (heading_margin, dots_bottom_y), (LEFT_PANEL_WIDTH - heading_margin, dots_bottom_y), 2)
+        # --- SVF (%) label and value below the new separator ---
         svf_label_font = pygame.font.Font(MODERN_FONT_NAME, 24)
         svf_label = svf_label_font.render("SVF (%)", True, (220, 220, 230))
         svf_label_x = heading_margin + 10  # left padding
-        svf_label_y = selector_y + dot_radius + 38  # below dots and percentages
+        svf_label_y = dots_bottom_y + 18  # below new separator
         screen.blit(svf_label, (svf_label_x, svf_label_y))
         # --- SVF value below label, blue, bold, much bigger ---
         if svf_value is not None:
@@ -992,7 +995,7 @@ def main():
         masks.clear()
         nonlocal mask, svf_value, status_text
         mask = None
-        svf_value = None
+        svf_value = 0  # Set SVF to 0 on image change
         status_text = f"Loaded {image_file}. Add points to segment."
 
     def prev_image():
@@ -1003,7 +1006,7 @@ def main():
         masks.clear()
         nonlocal mask, svf_value, status_text
         mask = None
-        svf_value = None
+        svf_value = 0  # Set SVF to 0 on image change
         status_text = f"Loaded {image_file}. Add points to segment."
 
     # --- Main event loop ---
