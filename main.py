@@ -1197,7 +1197,7 @@ def main():
                         x = mx - LEFT_PANEL_WIDTH
                         y = my
                         crop_n = int(letterbox_crop)
-                        res = project_point_fisheye_to_equi(x, y, w, h - 2 * crop_n, out_size // 2)
+                        res = project_point_fisheye_to_equi(x, y, w, h, out_size // 2)
                         if res is not None:
                             img_x, img_y = res
                             img_y += crop_n
@@ -1361,7 +1361,7 @@ def main():
 def rotate_north_up(fisheye_img, w_point, w_img):
     """
     Rotate the hemispherical (fisheye) image so that north is up, using the W point as reference.
-    North is 90° right of west (i.e., +π/2 azimuth from W).
+    North is 90° *counterclockwise* from west (i.e., -π/2 azimuth from W, since view is up).
     If w_point is None, returns the image unchanged.
     """
     if w_point is None or w_img is None:
@@ -1369,7 +1369,8 @@ def rotate_north_up(fisheye_img, w_point, w_img):
     import numpy as np
     from PIL import Image
     px, _ = w_point
-    north_x = (px + w_img // 4) % w_img
+    # North is 90° counterclockwise from West (viewport up)
+    north_x = (px - w_img // 4) % w_img
     north_angle = 360.0 * north_x / w_img
     img_pil = Image.fromarray(fisheye_img)
     rotated = img_pil.rotate(-north_angle, resample=Image.BILINEAR)
@@ -1378,8 +1379,8 @@ def rotate_north_up(fisheye_img, w_point, w_img):
 def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
     """
     Overlay dashes and labels for W, N, E, S directions on the hemisphere image.
-    Points are mirrored over the horizon for southern hemisphere source.
-    Fixes 15 degree clockwise offset, makes dashes longer and labels bigger.
+    Directions are counterclockwise: W (reference), N (90° ccw), E (180°), S (270° ccw from W).
+    This matches the viewport convention (up is view, so E/W are swapped).
     """
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
@@ -1393,34 +1394,39 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
     except Exception:
         font = ImageFont.load_default()
+    # Compute direction azimuths: W, N, E, S (counterclockwise from W)
     if w_point is not None and w_img is not None:
         px, _ = w_point
         base = px % w_img
+        # Counterclockwise: W (0), N (-90°), E (180°), S (+90°)
         directions = [
             (base, 'W'),
-            ((base + w_img//4) % w_img, 'N'),
+            ((base - w_img//4) % w_img, 'N'),
             ((base + w_img//2) % w_img, 'E'),
-            ((base + 3*w_img//4) % w_img, 'S'),
+            ((base + w_img//4) % w_img, 'S'),
         ]
     else:
+        # Default: W at 0, N at -90°, E at 180°, S at +90°
         directions = [
             (0, 'W'),
-            (w//4, 'N'),
+            (3*w//4, 'N'),
             (w//2, 'E'),
-            (3*w//4, 'S'),
+            (w//4, 'S'),
         ]
-    mirrored_angles = []
+    # Compute angles for drawing (counterclockwise, 0° = right, 90° = down, 180° = left, 270° = up)
+    angles_labels = []
     for x, label in directions:
         phi = 2 * np.pi * (x / (w_img if w_img else w))
-        phi_mirrored = (phi + np.pi) % (2 * np.pi)
-        angle = np.degrees(phi_mirrored)
-        angle -= 15
-        mirrored_angles.append((angle, label))
+        # For hemisphere: 0° = right (E), 90° = down (S), 180° = left (W), 270° = up (N)
+        # But our mapping: 0° = W, so subtract 90° per step counterclockwise
+        angle = np.degrees(phi)
+        angle = (angle - 90) % 360  # rotate so that 0° is up (N)
+        angles_labels.append((angle, label))
     dash_len = 64
     dash_color = (255, 255, 255, 140)
     label_color = (255, 255, 255, 220)
-    for angle, label in mirrored_angles:
-        theta = np.deg2rad(angle - 90)
+    for angle, label in angles_labels:
+        theta = np.deg2rad(angle)
         x0 = cx + int((r - dash_len) * np.cos(theta))
         y0 = cy + int((r - dash_len) * np.sin(theta))
         x1 = cx + int((r - 8) * np.cos(theta))
@@ -1428,7 +1434,6 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
         draw.line([(x0, y0), (x1, y1)], fill=dash_color, width=5)
         lx = cx + int((r + 18) * np.cos(theta))
         ly = cy + int((r + 18) * np.sin(theta))
-        # Use font.getsize for text size (Pillow >=7)
         try:
             w_label, h_label = font.getsize(label)
         except AttributeError:
