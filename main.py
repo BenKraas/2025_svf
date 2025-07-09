@@ -1381,6 +1381,8 @@ def rotate_north_up(fisheye_img, w_point, w_img):
     north_angle = 360.0 * north_x / w_img
     img_pil = Image.fromarray(fisheye_img)
     rotated = img_pil.rotate(-north_angle, resample=Image.BILINEAR)
+    # --- Fix: rotate by 180° to match annotated HS image orientation ---
+    rotated = rotated.rotate(180, resample=Image.BILINEAR)
     return np.array(rotated)
 
 def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
@@ -1390,9 +1392,8 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
     """
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
-    # --- Rotate the image by 180° first ---
+    # --- Remove: do NOT rotate the image here, it is already rotated ---
     pil_img = Image.fromarray(fisheye_img)
-    pil_img = pil_img.rotate(180, resample=Image.BILINEAR)
     out_img = np.array(pil_img)
     h, w = out_img.shape[:2]
     cx, cy = w // 2, h // 2
