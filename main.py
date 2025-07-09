@@ -800,7 +800,7 @@ def main():
                     if 0 <= sx < img_area_w and 0 <= sy < img_area_h:
                         color = CLICK_TYPES[type_idx]["color"]
                         pygame.draw.circle(screen, color, (LEFT_PANEL_WIDTH + sx, sy), point_radius)
-            # Draw direction points overlay if w_point is set
+            # Draw direction points overlay if w_point is not None:
             if w_point is not None:
                 draw_direction_points_func(screen, w_point)
         # --- SVF Math Visualization ---
@@ -1386,20 +1386,20 @@ def rotate_north_up(fisheye_img, w_point, w_img):
 def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
     """
     Overlay dashes and labels for W, N, E, S directions on the hemisphere image.
-    Directions are counterclockwise: W (reference), N (90° ccw), E (180°), S (270° ccw from W).
-    This matches the viewport convention (up is view, so E/W are swapped).
-    Labels and lines are bigger and moved further inwards. Labels have a black outline.
+    The image and label positions are rotated 180°, but the label text is not rotated.
     """
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
-    out_img = fisheye_img.copy()
+    # --- Rotate the image by 180° first ---
+    pil_img = Image.fromarray(fisheye_img)
+    pil_img = pil_img.rotate(180, resample=Image.BILINEAR)
+    out_img = np.array(pil_img)
     h, w = out_img.shape[:2]
     cx, cy = w // 2, h // 2
     r = min(cx, cy)
-    pil_img = Image.fromarray(out_img)
     draw = ImageDraw.Draw(pil_img, 'RGBA')
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 72)  # Increased font size
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 72)
     except Exception:
         font = ImageFont.load_default()
     # Compute direction azimuths: W, N, E, S (counterclockwise from W)
@@ -1412,7 +1412,6 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
             ((base + w_img//2) % w_img, 'W'),
             ((base + w_img//4) % w_img, 'N'),
         ]
-        # Compute north_angle as in rotate_north_up
         north_x = (px - w_img // 4) % w_img
         north_angle = 360.0 * north_x / w_img
     else:
@@ -1428,10 +1427,11 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
         phi = 2 * np.pi * (x / (w_img if w_img else w))
         angle = np.degrees(phi)
         angle = (angle - 90) % 360  # rotate so that 0° is up (N)
-        # --- Fix: subtract north_angle to match rotated image ---
         angle = (angle - north_angle) % 360
+        # --- Shift all positions by 180° so S is down, N is up ---
+        angle = (angle + 180) % 360
         angles_labels.append((angle, label))
-    dash_len = 120  # bigger
+    dash_len = 120
     dash_color = (255, 255, 255, 220)
     label_color = (255, 255, 255, 255)
     outline_color = (0, 0, 0, 255)
@@ -1442,9 +1442,9 @@ def annotate_directions_on_hemisphere(fisheye_img, w_point=None, w_img=None):
         y0 = cy + int((r - dash_len) * np.sin(theta))
         x1 = cx + int((r - 24) * np.cos(theta))
         y1 = cy + int((r - 24) * np.sin(theta))
-        draw.line([(x0, y0), (x1, y1)], fill=dash_color, width=12)  # Thicker line
+        draw.line([(x0, y0), (x1, y1)], fill=dash_color, width=12)
         # Move label further inwards
-        label_r = r - 100  # further inwards
+        label_r = r - 100
         lx = cx + int(label_r * np.cos(theta))
         ly = cy + int(label_r * np.sin(theta))
         try:
