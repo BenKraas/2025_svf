@@ -70,7 +70,7 @@ def init_logging(name, console_level=logging.INFO, file_level=logging.DEBUG):
 
 # Initialize Pygame
 def main():
-    logger = init_logging('svf', console_level=logging.DEBUG, file_level=logging.DEBUG)
+    logger = init_logging('svf', console_level=logging.WARN, file_level=logging.DEBUG)
     logger.info('Starting SAM Segmenter')
     pygame.init()
     pygame.font.init()
