@@ -1087,6 +1087,7 @@ def main():
                     status_text = "Reset. Add points to segment."
                     mask = None  # Clear the mask overlay as well
                     svf_value = 0  # Reset SVF value to 0
+                    w_point = None  # Clear W-Markers as well
                 elif event.key == pygame.K_LEFT:
                     offset_x -= 50
                     clamp_offsets()
