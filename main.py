@@ -952,7 +952,8 @@ def main():
         eq_mask = eq_mask_name
         hs_proj = hs_name
         hs_mask = hs_mask_name
-        hs_north = ""  # null for now
+        hs_north = hs_north_name  # now contains the filename of the HS_N image
+        hs_north_annot = hs_north_annot_name  # filename for annotated image
         # Compute north pixel (EQ x value) if w_point is set
         if w_point is not None:
             px, py = w_point
@@ -981,11 +982,11 @@ def main():
             if write_header:
                 writer.writerow([
                     "Station_ID", "base_path", "svf", "svf_100", "svf_75", "svf_50", "svf_25",
-                    "eq_orig", "eq_mask", "hs_proj", "hs_mask", "hs_north", "px_north"
+                    "eq_orig", "eq_mask", "hs_proj", "hs_mask", "hs_north", "hs_north_annot", "px_north"
                 ])
             writer.writerow([
                 Station_ID, base_path, svf_val, svf_100, svf_75, svf_50, svf_25,
-                eq_orig, eq_mask, hs_proj, hs_mask, hs_north, px_north
+                eq_orig, eq_mask, hs_proj, hs_mask, hs_north, hs_north_annot, px_north
             ])
         logger.info(f"Wrote CSV row to {csv_path}")
         # Update file list so user can go back to this file
