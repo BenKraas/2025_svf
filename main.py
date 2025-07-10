@@ -1366,6 +1366,25 @@ def main():
                 if event.button == 2 or (event.button == 1 and (pygame.key.get_mods() & pygame.KMOD_CTRL)):
                     dragging = False
                     logger.info('End drag')
+            elif event.type == pygame.MOUSEWHEEL:
+                # Enable zoom with Ctrl + mouse wheel
+                if pygame.key.get_mods() & pygame.KMOD_CTRL:
+                    old_scale = scale_factor
+                    if event.y > 0:
+                        # Zoom in
+                        scale_factor = min(MAX_SCALE, scale_factor * 1.2)
+                        scale_factor = max(MIN_SCALE, scale_factor)
+                    elif event.y < 0:
+                        # Zoom out
+                        scale_factor = max(MIN_SCALE, scale_factor / 1.2)
+                        scale_factor = min(MAX_SCALE, scale_factor)
+                    update_ui_image()
+                    mx, my = zoom_center
+                    offset_x = int((offset_x + mx) * scale_factor / old_scale - mx)
+                    offset_y = int((offset_y + my - 60) * scale_factor / old_scale - (my - 60))
+                    clamp_offsets()
+                    redraw_image_area()
+                    redraw_status_bar()
             elif event.type == pygame.MOUSEMOTION:
                 mx, my = event.pos
                 if dragging and not show_spherical_view:
