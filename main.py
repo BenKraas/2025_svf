@@ -1256,7 +1256,8 @@ def main():
                         img_y = int((y + offset_y) / scale_factor)
                     if img_x is None or img_y is None:
                         continue
-                    if active_click_type == len(CLICK_TYPES):
+                    # Only set W marker if left mouse button (not drag/scroll)
+                    if active_click_type == len(CLICK_TYPES) and event.button == 1 and not (pygame.key.get_mods() & pygame.KMOD_CTRL):
                         # Set W-point and show all four direction points
                         w_point = (img_x, img_y)
                         status_text = f"Set W-point at x={img_x}, y={img_y}"
