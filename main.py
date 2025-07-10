@@ -959,16 +959,33 @@ def main():
             px_north = int((px - w_img // 4) % w_img)
         else:
             px_north = ""
+        # --- Compute SVF for each percentage level (100%, 75%, 50%, 25%) ---
+        svf_100 = svf_75 = svf_50 = svf_25 = None
+        if mask is not None:
+            # For each level, create a binary mask and compute SVF
+            bins = [0.13, 0.38, 0.63, 0.88, 1.01]
+            quantized = np.digitize(mask, bins)
+            # 4: 100%, 3: 75%, 2: 50%, 1: 25%
+            mask_100 = (quantized == 4).astype(np.float32)
+            mask_75 = (quantized == 3).astype(np.float32)
+            mask_50 = (quantized == 2).astype(np.float32)
+            mask_25 = (quantized == 1).astype(np.float32)
+            svf_100 = compute_svf(mask_100, crop=letterbox_crop, h=h)
+            svf_75 = compute_svf(mask_75, crop=letterbox_crop, h=h)
+            svf_50 = compute_svf(mask_50, crop=letterbox_crop, h=h)
+            svf_25 = compute_svf(mask_25, crop=letterbox_crop, h=h)
         # Write header if file does not exist
         write_header = not os.path.exists(csv_path)
         with open(csv_path, "a", newline="") as csvfile:
             writer = csv.writer(csvfile)
             if write_header:
                 writer.writerow([
-                    "Station_ID", "base_path", "svf", "eq_orig", "eq_mask", "hs_proj", "hs_mask", "hs_north", "px_north"
+                    "Station_ID", "base_path", "svf", "svf_100", "svf_75", "svf_50", "svf_25",
+                    "eq_orig", "eq_mask", "hs_proj", "hs_mask", "hs_north", "px_north"
                 ])
             writer.writerow([
-                Station_ID, base_path, svf_val, eq_orig, eq_mask, hs_proj, hs_mask, hs_north, px_north
+                Station_ID, base_path, svf_val, svf_100, svf_75, svf_50, svf_25,
+                eq_orig, eq_mask, hs_proj, hs_mask, hs_north, px_north
             ])
         logger.info(f"Wrote CSV row to {csv_path}")
         # Update file list so user can go back to this file
