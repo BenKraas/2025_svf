@@ -180,10 +180,14 @@ def main():
     zoom_center = (img_area_w // 2, (img_area_h) // 2)
     logger.info(f"Image size: {w_ui}x{h_ui}, Window size: {window_w}x{window_h}")
 
+    # Prepare a cached surface for fast blitting during drag
+    img_ui_surf = pygame.surfarray.make_surface(img_ui.swapaxes(0, 1))
+
     def update_ui_image():
-        nonlocal img_ui, w_ui, h_ui
+        nonlocal img_ui, w_ui, h_ui, img_ui_surf
         w_ui, h_ui = int(w * scale_factor), int(h * scale_factor)
         img_ui = np.array(Image.fromarray(img).resize((w_ui, h_ui), Image.LANCZOS))
+        img_ui_surf = pygame.surfarray.make_surface(img_ui.swapaxes(0, 1))
         logger.debug(f"update_ui_image: w_ui={w_ui}, h_ui={h_ui}, scale_factor={scale_factor}")
 
     def clamp_offsets():
@@ -1222,7 +1226,17 @@ def main():
                         active_click_type = len(CLICK_TYPES)
                         status_text = "Selected W (Set West direction)"
                         break
-                    # Only handle events in image area
+                    # --- DRAGGING LOGIC ---
+                    # Only start dragging if:
+                    # - Middle mouse button (button 2)
+                    # - OR left mouse button (button 1) with Ctrl held
+                    # - AND click is in image area (not left panel)
+                    dragging = False
+                    if (event.button == 2 or (event.button == 1 and (pygame.key.get_mods() & pygame.KMOD_CTRL))) and mx >= LEFT_PANEL_WIDTH and my < img_area_h:
+                        dragging = True
+                        logger.info('Begin drag')
+                        continue  # Don't process as marker click
+                    # --- Marker logic below ---
                     img_x = img_y = None
                     if show_spherical_view:
                         out_size = min(img_area_w, img_area_h)
@@ -1349,12 +1363,22 @@ def main():
                 pygame.event.pump()
                 # --- End UI update ---
             elif event.type == pygame.MOUSEBUTTONUP:
-                if event.button == 2:
+                if event.button == 2 or (event.button == 1 and (pygame.key.get_mods() & pygame.KMOD_CTRL)):
                     dragging = False
-                   
                     logger.info('End drag')
             elif event.type == pygame.MOUSEMOTION:
                 mx, my = event.pos
+                if dragging and not show_spherical_view:
+                    dx, dy = event.rel
+                    offset_x -= dx
+                    offset_y -= dy
+                    clamp_offsets()
+                    # Fast drag: only blit the cached image, no overlays/masks/points
+                    screen.fill((0, 0, 0), rect=image_area_rect)
+                    img_rect = pygame.Rect(offset_x, offset_y, img_area_w, img_area_h)
+                    screen.blit(img_ui_surf, (LEFT_PANEL_WIDTH, 0), img_rect)
+                    pygame.display.update(image_area_rect)
+                    continue  # Skip rest of MOUSEMOTION for performance
                 if show_spherical_view:
                     out_size = min(img_area_w, img_area_h)
                     x = mx - LEFT_PANEL_WIDTH
@@ -1378,13 +1402,6 @@ def main():
                     else:
                         mouse_img_x = None
                         mouse_img_y = None
-                if dragging and not show_spherical_view:
-                    dx, dy = event.rel
-                    offset_x -= dx
-                    offset_y -= dy
-                    clamp_offsets()
-                    redraw_image_area()
-        clock.tick(30)
 
     logger.info('Exiting SAM Segmenter')
     pygame.quit()
