@@ -13,11 +13,13 @@ import math
 import csv
 from scipy.ndimage import rotate as ndimage_rotate
 
+
 # Declaration of working slop:
-# This project was vibe-coded with Github Copilot. 
+# This project was mostly vibe-coded with Github Copilot. 
 # 
 # If you want to try to maintain this code, don't. 
-# Save your sanity and rewrite instead.
+# Save your sanity and rewrite this mess instead!
+
 
 
 # Configuration
@@ -949,7 +951,7 @@ def main():
         logger.info(f"Saved rotated hemisphere with annotations to {hs_north_annot_path}")
         # --- CSV export ---
         csv_path = os.path.join(SVF_DIR, "svf_results.csv")
-        Station_ID = base
+        Stations_ID = base
         base_path = image_file  # includes extension
         svf_val = float(svf_value)
         eq_orig = eq_name
@@ -985,11 +987,11 @@ def main():
             writer = csv.writer(csvfile)
             if write_header:
                 writer.writerow([
-                    "Station_ID", "base_path", "svf", "svf_100", "svf_75", "svf_50", "svf_25",
+                    "Stations_ID", "base_path", "svf", "svf_100", "svf_75", "svf_50", "svf_25",
                     "eq_orig", "eq_mask", "hs_proj", "hs_mask", "hs_north", "hs_north_annot", "px_north"
                 ])
             writer.writerow([
-                Station_ID, base_path, svf_val, svf_100, svf_75, svf_50, svf_25,
+                Stations_ID, base_path, svf_val, svf_100, svf_75, svf_50, svf_25,
                 eq_orig, eq_mask, hs_proj, hs_mask, hs_north, hs_north_annot, px_north
             ])
         logger.info(f"Wrote CSV row to {csv_path}")
